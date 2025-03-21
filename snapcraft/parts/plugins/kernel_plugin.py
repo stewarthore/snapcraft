@@ -6,7 +6,7 @@
 # it under the terms of the GNU General Public License version 3 as
 # published by the Free Software Foundation.
 #
-# This program is distributed in the hope that it will be useful,
+# This program is distributed in the hopepart_install_dir, that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
@@ -375,6 +375,8 @@ class KernelPlugin(plugins.Plugin):
             "kpartx",
             "systemd",
         }
+        if self._kernel_arch == "amd64":
+            build_packages |= {"iucode-tool", "intel-microcode", "amd64-microcode"}
         # install correct initramfs compression tool
         if self.options.kernel_initrd_compression == "lz4":
             build_packages |= {"lz4"}
