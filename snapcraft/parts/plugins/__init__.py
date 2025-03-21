@@ -23,6 +23,8 @@ from .conda_plugin import CondaPlugin
 from .flutter_plugin import FlutterPlugin
 from .initrd_plugin import InitrdPlugin
 from .kernel_plugin import KernelPlugin
+from .ubuntu_kernel_plugin import UbuntuKernelPlugin
+from .ubuntu_core_image_plugin import UbuntuCoreImagePlugin
 from .matter_sdk_plugin import MatterSdkPlugin
 from .poetry_plugin import PoetryPlugin
 from .python_plugin import PythonPlugin
@@ -37,6 +39,8 @@ __all__ = [
     "KernelPlugin",
     "PoetryPlugin",
     "PythonPlugin",
+    "UbuntuKernelPlugin",
+    "UbuntuCoreImagePlugin",
     "get_plugins",
     "register",
     "UvPlugin",

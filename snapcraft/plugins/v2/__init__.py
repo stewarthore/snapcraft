@@ -72,6 +72,7 @@ __all__ = [
     "python",
     "qmake",
     "rust",
+    #    "ubuntu-kernel",
     "PluginV2",
     "AutotoolsPlugin",
     "CatkinPlugin",
@@ -90,4 +91,5 @@ __all__ = [
     "PythonPlugin",
     "QMakePlugin",
     "RustPlugin",
+    #    "UbuntuKernelPlugin"
 ]

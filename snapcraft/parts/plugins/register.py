@@ -1,6 +1,6 @@
 # -*- Mode:Python; indent-tabs-mode:nil; tab-width:4 -*-
 #
-# Copyright 2022, 2025 Canonical Ltd.
+# Copyright 2022 Canonical Ltd.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 3 as
@@ -27,6 +27,9 @@ from .flutter_plugin import FlutterPlugin
 from .initrd_plugin import InitrdPlugin
 from .kernel_plugin import KernelPlugin
 from .matter_sdk_plugin import MatterSdkPlugin
+from .python_plugin import PythonPlugin
+from .ubuntu_core_image_plugin import UbuntuCoreImagePlugin
+from .ubuntu_kernel_plugin import UbuntuKernelPlugin
 
 
 def get_plugins(core22: bool) -> dict[str, PluginType]:
@@ -39,7 +42,10 @@ def get_plugins(core22: bool) -> dict[str, PluginType]:
         "conda": CondaPlugin,
         "flutter": FlutterPlugin,
         "initrd": InitrdPlugin,
+        "python": PythonPlugin,
         "matter-sdk": MatterSdkPlugin,
+        "ubuntu-kernel": UbuntuKernelPlugin,
+        "ubuntu-core-image": UbuntuCoreImagePlugin,
     } | python_common.get_python_plugins()
 
     if core22:
