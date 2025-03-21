@@ -375,6 +375,8 @@ class KernelPlugin(plugins.Plugin):
             "kpartx",
             "systemd",
         }
+        if self._kernel_arch == "amd64":
+            build_packages |= {"iucode-tool", "intel-microcode", "amd64-microcode"}
         # install correct initramfs compression tool
         if self.options.kernel_initrd_compression == "lz4":
             build_packages |= {"lz4"}
