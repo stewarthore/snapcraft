@@ -90,6 +90,7 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "KERNEL_ABI=$(ls ${CRAFT_STAGE}/modules | head -n1)",
             "TEMPLATE=${CRAFT_PART_BUILD}/template",
             "SRC=${CRAFT_PART_SRC}/usr/lib/ubuntu-core-initramfs",
+            "FIRMWARE_DIR=${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}",
         ]
         if not self.options.source:
             # Use the target architecture package and unpack to CRADT_PART_SRC
@@ -101,6 +102,12 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             # Copy the target ubuntu-core-initramfs to $template/main
             "cp -a ${SRC} ${TEMPLATE}",
         ]
+        cmds += [
+            'if [ -d "${FIRMWARE_DIR}" ] && '
+            '[ -n "$(find ${FIRMWARE_DIR} -mindepth 1 -maxdepth 1 -print -quit)" ]; '
+            "then",
+            'FIRWARE_OPTION="--firmwaredir ${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}"',
+        ]
         # TODO(esh) do we need to check for the existence of `firmware`. Not
         # all kernel builds will have explicit firmware files.
         cmds += [
@@ -108,8 +115,8 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI}",
-            # "--firmwaredir ${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}"
+            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI}"
+            "${FIRMWARE_OPTION}",
             "mv ${CRAFT_PART_BUILD}/initrd.img-${KERNEL_ABI} \
                 ${CRAFT_PART_INSTALL}/initrd.img",
         ]
