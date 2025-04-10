@@ -78,16 +78,18 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     """The ubuntu kernel flavour, will be ignored if defconfig provided."""
     ubuntu_kernel_dkms: list[str] = []
     """Additional dkms."""
-    ubuntu_kernel_release_name: str = ""
+    ubuntu_kernel_release_name: str | None = None
     """Ubuntu release to build. Mutually exclusive with `source`."""
     ubuntu_kernel_defconfig: str | None = None
     """Path to custom defconfig, relative to the project directory."""
     ubuntu_kernel_config: list[str] = []
     """Custom set of kenel configuration parameters."""
-    ubuntu_kernel_image_target: str = ""
+    ubuntu_kernel_image_target: str | None = None
     """Kernel image target type."""
     ubuntu_kernel_tools: list[str] = []
     """Kernel tools to include, e.g. perf."""
+    ubuntu_kernel_use_prebuilt_image: bool = False
+    """Flag to use prebuilt kernel packages. Only valid with ubuntu-kerne-release-name."""
 
     # Validate so that release_name and source are mutually exclusive
     @pydantic.model_validator(mode="after")
@@ -100,6 +102,10 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
         if not self.ubuntu_kernel_release_name and not self.source:
             raise errors.SnapcraftError(
                 "must provide either `ubuntu-kernel-release-name` or `source`"
+            )
+        if self.source and self.ubuntu_kernel_use_prebuilt_image:
+            raise errors.SnapcraftError(
+                "`ubuntu-kernel-use-prebuilt-image only available with `ubuntu-kernel-release-name`"
             )
         return self
 
@@ -259,12 +265,12 @@ class UbuntuKernelPlugin(plugins.Plugin):
             raise errors.SnapcraftError("only core22 and core24 bases are supported")
         self.release_name = (
             self.options.ubuntu_kernel_release_name
-            if self.options.ubuntu_kernel_release_name
+            if self.options.ubuntu_kernel_release_name is not None
             else None
         )
         self.image_target = (
             self.options.ubuntu_kernel_image_target
-            if self.options.ubuntu_kernel_image_target
+            if self.options.ubuntu_kernel_image_target is not None
             else _DEFAULT_KERNEL_IMAGE_TARGET[part_info.arch_build_for]
         )
 
