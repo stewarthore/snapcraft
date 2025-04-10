@@ -77,9 +77,9 @@ def setup_method_fixture():
         )
 
         part_info = PartInfo(project_info=project_info, part=part)
-
+        properties_class = UbuntuKernelPlugin.properties_class.unmarshal(properties)
         return UbuntuKernelPlugin(
-            properties=UbuntuKernelPlugin.properties_class.unmarshal(properties),
+            properties=properties_class,
             part_info=part_info,
         )
 

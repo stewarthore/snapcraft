@@ -115,7 +115,7 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI}"
+            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI} "
             "${FIRMWARE_OPTION}",
             "mv ${CRAFT_PART_BUILD}/initrd.img-${KERNEL_ABI} \
                 ${CRAFT_PART_INSTALL}/initrd.img",
