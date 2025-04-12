@@ -88,7 +88,7 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     """Kernel image target type."""
     ubuntu_kernel_tools: list[str] = []
     """Kernel tools to include, e.g. perf."""
-    ubuntu_kernel_use_prebuilt_image: bool = False
+    ubuntu_kernel_use_binary_package: bool = False
     """Flag to use prebuilt kernel packages. Only valid with ubuntu-kerne-release-name."""
 
     # Validate so that release_name and source are mutually exclusive
@@ -103,7 +103,7 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
             raise errors.SnapcraftError(
                 "must provide either `ubuntu-kernel-release-name` or `source`"
             )
-        if self.source and self.ubuntu_kernel_use_prebuilt_image:
+        if self.source and self.ubuntu_kernel_use_binary_package:
             raise errors.SnapcraftError(
                 "`ubuntu-kernel-use-prebuilt-image only available with `ubuntu-kernel-release-name`"
             )
@@ -145,12 +145,45 @@ class BuildCommandGenerator:
             'echo "" >> $CRAFT_PROJECT_DIR/custom_config_fragment',
         ]
 
-    def ubuntu_source_tree(self) -> list[str]:
-        """Get the build commands given Ubuntu kernel source tree."""
+    def _common(self) -> list[str]:
+        """The command commands for binary and source packages."""
         cmds = [
             "env",
             "rsync -aH $CRAFT_PART_SRC/ $CRAFT_PART_BUILD/kernel",
             "cd $CRAFT_PART_BUILD/kernel",
+        ]
+        return cmds
+
+    def ubuntu_binary_packages(self) -> list[str]:
+        """Extract kernel binary package contents."""
+        cmds = self._common()
+        cmds += [
+            """
+            KERNEL_ABI=$(ls linux-image*.deb | cut -d '-' -f 3-4)
+            for pkg in $(ls linux-*.deb); do
+                unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
+                dpkg-deb -R "$pkg" "$unpack_path"/
+            done
+            mv unpacked-linux-image/* ${CRAFT_PART_INSTALL}
+            ln -s ${CRAFT_PART_INSTALL}/boot/vmlinuz-${KERNEL_ABI}.* ${CRAFT_PART_INSTALL}/kernel.img
+
+            mv unpacked-linux-modules/lib/modules ${CRAFT_PART_INSTALL}/modules
+            DTBS=unpack-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
+            if [ -d ${DTBS} ]; then
+                mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
+            fi
+            FIRMWARE=unpack-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}
+            if [ -d ${FIRMWARE} ]; then
+                mv ${FIRMWARE}/ ${CRAFT_PART_INSTALL}/firmware/
+            fi
+            """,
+        ]
+        return cmds
+
+    def ubuntu_source_tree(self) -> list[str]:
+        """Get the build commands given Ubuntu kernel source tree."""
+        cmds = self._common()
+        cmds += [
             ". debian/debian.env",
             "deb_ver=$(dpkg-parsechangelog -l ${DEBIAN}/changelog -S version)",
             "KERNEL_ABI=$(echo ${deb_ver} | cut -d. -f1-3)-${FLAVOUR}",
@@ -370,11 +403,41 @@ class UbuntuKernelPlugin(plugins.Plugin):
         """Clone the repository when no source is provided."""
         if self.options.source:
             return super().get_pull_commands()
-        repo_url = kernel_launchpad_repository(self.release_name)
-        # '.' is $CRAFT_PART_SRC. The env. var. is not defined when pull runs
-        cmds = [
-            f"git clone --depth=1 --branch=master-next {repo_url} .",
-        ]
+        cmds = []
+        if self.options.ubuntu_kernel_use_binary_package:
+            # use prebuilt kernel packages
+            target_arch = self.part_info.arch_build_for
+            host_arch = self.part_info.arch_build_on
+            if host_arch != target_arch:
+                cmds += [
+                    (
+                        f'echo "deb [arch={target_arch}] '
+                        "http://ports.ubuntu.com/ubuntu-ports "
+                        f'{self.release_name} main restricted universe multiverse" '
+                        ">> /etc/apt/sources.list.d/jammy_ports.list"
+                    ),
+                ]
+            cmds += [
+                "apt-get update",
+                (
+                    f"PACKAGES=$(apt show linux-image-generic:{target_arch} | grep Depends | "
+                    R"sed 's|.*linux\(.*\), linux\(.*\), linux\(.*\)$|"
+                    Rf"linux\1:{target_arch} linux\2:{target_arch}|g')"  # linux\3:{target_arch}|g')"
+                ),
+                # Need to ignore errors on the download because not all architectures have
+                # linux-firmware
+                # TODO(esh): check if the package is available for the architecture
+                # before trying to download it
+                "echo $PACKAGES | xargs apt download || true",
+                "pwd",
+                "ls -larth",
+            ]
+        else:
+            repo_url = kernel_launchpad_repository(self.release_name)
+            # '.' is $CRAFT_PART_SRC. The env. var. is not defined when pull runs
+            cmds = [
+                f"git clone --depth=1 --branch=master-next {repo_url} .",
+            ]
         return cmds
 
     @overrides
@@ -382,7 +445,10 @@ class UbuntuKernelPlugin(plugins.Plugin):
         logger.info("Setting build commands...")
         logger.info("*****************************")
         logger.info("self.options.source = %", self.options.source)
-        cmds = self.build_commands.ubuntu_source_tree()
+        if self.options.ubuntu_kernel_use_binary_package:
+            cmds = self.build_commands.ubuntu_binary_packages()
+        else:
+            cmds = self.build_commands.ubuntu_source_tree()
         logger.info("COMMANDS:\n%s", cmds)
         logger.info("===============================")
         return cmds
