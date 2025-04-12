@@ -75,6 +75,13 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "xz-utils",
             "zstd",
         }
+        if self.part_info.arch_build_for == "amd64":
+            build_packages |= {
+                "iucode-tool",
+                "intel-microcode",
+                "amd64-microcode",
+            }
+
         return build_packages
 
     @overrides
