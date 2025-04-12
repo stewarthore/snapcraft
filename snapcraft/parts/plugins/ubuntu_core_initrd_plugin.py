@@ -87,7 +87,7 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
         # If we have
 
         cmds = [
-            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/modules | head -n1)",
+            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/lib/modules | head -n1)",
             "TEMPLATE=${CRAFT_PART_BUILD}/template",
             "SRC=${CRAFT_PART_SRC}/usr/lib/ubuntu-core-initramfs",
             "FIRMWARE_DIR=${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}",
@@ -102,21 +102,28 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             # Copy the target ubuntu-core-initramfs to $template/main
             "cp -a ${SRC} ${TEMPLATE}",
         ]
+        # Not all kernels provide a firmware.
+        # ubuntu-core-initramfs create-initrd fails if --firmwaredir is given
+        # an empty directory or non-existent path.
         cmds += [
             'if [ -d "${FIRMWARE_DIR}" ] && '
             '[ -n "$(find ${FIRMWARE_DIR} -mindepth 1 -maxdepth 1 -print -quit)" ]; '
             "then",
-            'FIRWARE_OPTION="--firmwaredir ${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}"',
-        ]
-        # TODO(esh) do we need to check for the existence of `firmware`. Not
-        # all kernel builds will have explicit firmware files.
-        cmds += [
             "ubuntu-core-initramfs create-initrd "
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI} "
-            "${FIRMWARE_OPTION}",
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "--firmwaredir ${FIRMWARE_DIR}",
+            "else",
+            "ubuntu-core-initramfs create-initrd "
+            "--output ${CRAFT_PART_BUILD}/initrd.img "
+            "--skeleton ${TEMPLATE} "
+            "--kernelver ${KERNEL_ABI} "
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "fi",
+        ]
+        cmds += [
             "mv ${CRAFT_PART_BUILD}/initrd.img-${KERNEL_ABI} \
                 ${CRAFT_PART_INSTALL}/initrd.img",
         ]

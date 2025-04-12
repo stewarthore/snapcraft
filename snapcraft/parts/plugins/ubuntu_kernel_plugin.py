@@ -56,6 +56,14 @@ def kernel_launchpad_repository(release_name: str) -> str:
     return KERNEL_REPO_STEM + release_name
 
 
+def get_package_kernel_abi_commands() -> list[str]:
+    """Common commands to extract the KERNEL_ABI from the .deb package."""
+    # Turn 5.15.0.136.137 into 5.15.0-136
+    return [
+        "KERNEL_ABI=$(ls linux-image-*.deb | cut -d '-' -f3-4)",
+    ]
+
+
 class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=True):
     """The part properties used by the Kernel plugin.
 
@@ -88,7 +96,7 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     """Kernel image target type."""
     ubuntu_kernel_tools: list[str] = []
     """Kernel tools to include, e.g. perf."""
-    ubuntu_kernel_use_prebuilt_image: bool = False
+    ubuntu_kernel_use_binary_package: bool = False
     """Flag to use prebuilt kernel packages. Only valid with ubuntu-kerne-release-name."""
 
     # Validate so that release_name and source are mutually exclusive
@@ -103,7 +111,7 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
             raise errors.SnapcraftError(
                 "must provide either `ubuntu-kernel-release-name` or `source`"
             )
-        if self.source and self.ubuntu_kernel_use_prebuilt_image:
+        if self.source and self.ubuntu_kernel_use_binary_package:
             raise errors.SnapcraftError(
                 "`ubuntu-kernel-use-prebuilt-image only available with `ubuntu-kernel-release-name`"
             )
@@ -145,12 +153,62 @@ class BuildCommandGenerator:
             'echo "" >> $CRAFT_PROJECT_DIR/custom_config_fragment',
         ]
 
-    def ubuntu_source_tree(self) -> list[str]:
-        """Get the build commands given Ubuntu kernel source tree."""
+    def _common(self) -> list[str]:
+        """The command commands for binary and source packages."""
         cmds = [
             "env",
             "rsync -aH $CRAFT_PART_SRC/ $CRAFT_PART_BUILD/kernel",
             "cd $CRAFT_PART_BUILD/kernel",
+        ]
+        return cmds
+
+    def ubuntu_binary_packages(self) -> list[str]:
+        """Extract kernel binary package contents."""
+        cmds = self._common()
+        cmds += get_package_kernel_abi_commands()
+        cmds += [
+            """
+            rm -fr unpacked-*
+            rm -fr ${CRAFT_PART_INSTALL}/*
+            dpkg-deb -R linux-image-*.deb unpacked-linux-image
+            dpkg-deb -R linux-modules-${KERNEL_ABI}*.deb unpacked-linux-modules
+            # ITERATE OVER DKMS PACKAGES
+            #for pkg in $(ls linux-modules-*.deb); do
+            #    unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
+            #    dpkg-deb -R "$pkg" "$unpack_path"/
+            #    mv ${unpack_path}/lib/modules/* ${CRAFT_PART_INSTALL}/modules/
+            #done
+            """,
+            "mv unpacked-linux-image/* ${CRAFT_PART_INSTALL}",
+            "mkdir ${CRAFT_PART_INSTALL}/lib",
+            "mv unpacked-linux-modules/lib/modules ${CRAFT_PART_INSTALL}/lib/modules",
+            "pushd .",
+            "cd ${CRAFT_PART_INSTALL}",
+            (
+                "ln -f ./boot/vmlinuz-${KERNEL_ABI}-${FLAVOUR} "
+                "${CRAFT_PART_INSTALL}/kernel.img"
+            ),
+            "popd",
+            "depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}-${FLAVOUR}",
+            "DTBS=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree",
+            """
+            if [ -d ${DTBS} ]; then
+                mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
+            fi
+            """,
+            "FIRMWARE=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}",
+            """
+            if [ -d ${FIRMWARE} ]; then
+                mv ${FIRMWARE}/ ${CRAFT_PART_INSTALL}/firmware/
+            fi
+            """,
+        ]
+        return cmds
+
+    def ubuntu_source_tree(self) -> list[str]:
+        """Get the build commands given Ubuntu kernel source tree."""
+        cmds = self._common()
+        cmds += [
             ". debian/debian.env",
             "deb_ver=$(dpkg-parsechangelog -l ${DEBIAN}/changelog -S version)",
             "KERNEL_ABI=$(echo ${deb_ver} | cut -d. -f1-3)-${FLAVOUR}",
@@ -232,10 +290,10 @@ class BuildCommandGenerator:
                 cp -lr debian/${pkg}-${KERNEL_ABI}/* ${CRAFT_PART_INSTALL}/
             done
             mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}
-            ln -s ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
+            ln -f ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
+            #mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/lib/modules
             depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
-            mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/modules
             DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
             if [ -d ${DTBS} ]; then
                 mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
@@ -370,11 +428,52 @@ class UbuntuKernelPlugin(plugins.Plugin):
         """Clone the repository when no source is provided."""
         if self.options.source:
             return super().get_pull_commands()
-        repo_url = kernel_launchpad_repository(self.release_name)
-        # '.' is $CRAFT_PART_SRC. The env. var. is not defined when pull runs
-        cmds = [
-            f"git clone --depth=1 --branch=master-next {repo_url} .",
-        ]
+        cmds = []
+        if self.options.ubuntu_kernel_use_binary_package:
+            # use prebuilt kernel packages
+            target_arch = self.part_info.arch_build_for
+            host_arch = self.part_info.arch_build_on
+            flavour = self.options.ubuntu_kernel_flavour
+            if host_arch != target_arch:
+                cmds += [
+                    (
+                        f'echo "deb [arch={target_arch}] '
+                        "http://ports.ubuntu.com/ubuntu-ports "
+                        f'{self.release_name} main restricted universe multiverse" '
+                        ">> /etc/apt/sources.list.d/jammy_ports.list"
+                    ),
+                ]
+            cmds += [
+                "apt-get update",
+                f"FLAVOUR={flavour}",
+                f"TARGET_ARCH={target_arch}",
+                "apt show linux-image-${FLAVOUR}:${TARGET_ARCH}",
+                (
+                    "apt show linux-image-${FLAVOUR}:${TARGET_ARCH} | "
+                    "grep '^Depends:' | "  # Find Depends line
+                    "sed 's/^Depends: //' | "  # remove 'Depends: '
+                    "sed 's/linux-firmware//' | "  # remove linux-firmware
+                    "tr ',' '\n' | "  # remove ', ' or '\n'
+                    r"sed 's/^\s*//;s/\s*$//' | "  # strip line
+                    "cut -d' ' -f1 | "  # tokenise, space delim
+                    r"sed 's/^\s*//;s/\s*$//' | "  # strip each token
+                    "grep . | "  # ignore tokens without '.' (version delim)
+                    "xargs -I {} apt download {}:${TARGET+ARCH}"  # download
+                ),
+            ]
+            cmds += get_package_kernel_abi_commands()
+            cmds += [
+                "apt download linux-modules-${KERNEL_ABI}-${FLAVOUR}:${TARGET_ARCH}",
+                "pwd",
+                "ls -larth",
+            ]
+            # iterate over additional packages
+        else:
+            repo_url = kernel_launchpad_repository(self.release_name)
+            # '.' is $CRAFT_PART_SRC. The env. var. is not defined when pull runs
+            cmds = [
+                f"git clone --depth=1 --branch=master-next {repo_url} .",
+            ]
         return cmds
 
     @overrides
@@ -382,7 +481,10 @@ class UbuntuKernelPlugin(plugins.Plugin):
         logger.info("Setting build commands...")
         logger.info("*****************************")
         logger.info("self.options.source = %", self.options.source)
-        cmds = self.build_commands.ubuntu_source_tree()
+        if self.options.ubuntu_kernel_use_binary_package:
+            cmds = self.build_commands.ubuntu_binary_packages()
+        else:
+            cmds = self.build_commands.ubuntu_source_tree()
         logger.info("COMMANDS:\n%s", cmds)
         logger.info("===============================")
         return cmds

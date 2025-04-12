@@ -97,9 +97,7 @@ class UbuntuCoreImagePlugin(plugins.Plugin):
         """Create the model file for the image build."""
         if self.options.ubuntu_core_image_type == "custom":
             # Create the model file for the custom image
-            model_file = self.part_info.build_path / "model.yaml"
-            with open(model_file, "w") as f:
-                f.write("Hello Sailor!\n")
+            pass
 
     @overrides
     def get_build_commands(self) -> list[str]:
