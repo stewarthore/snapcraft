@@ -292,8 +292,8 @@ class BuildCommandGenerator:
             mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}
             ln -f ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
-            #mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/lib/modules
             depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
+            #mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/modules
             DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
             if [ -d ${DTBS} ]; then
                 mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs

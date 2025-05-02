@@ -132,10 +132,37 @@ class TestPluginUbuntuCoreInitrd:
 
     @pytest.mark.parametrize(
         "base, build_for_arch",
-        get_project_info_parameters(),
-        ids=get_test_fixture_ids(),
+        (("core22", "amd64"), ("core24", "amd64")),
+        ids=["core22, amd64", "core24, amd64"],
     )
-    def test_get_build_packages(
+    def test_get_build_packages_amd64(
+        self, base, build_for_arch, new_dir, setup_method_fixture
+    ):
+        """Test the expected build packages for building the Ubuntu kernel."""
+        plugin = setup_method_fixture(
+            new_dir, project_base=base, project_build_for_arch=build_for_arch
+        )
+        expected_common_packages = {
+            "bzip2",
+            "gzip",
+            "lz4",
+            "lzma",
+            "lzop",
+            "ubuntu-core-initramfs",
+            "xz-utils",
+            "zstd",
+            "intel-microcode",
+            "iucode-tool",
+            "amd64-microcode",
+        }
+        assert expected_common_packages == plugin.get_build_packages()
+
+    @pytest.mark.parametrize(
+        "base, build_for_arch",
+        (("core22", "arm64"), ("core24", "arm64")),
+        ids=["core22, arm64", "core24, arm64"],
+    )
+    def test_get_build_packages_arm64(
         self, base, build_for_arch, new_dir, setup_method_fixture
     ):
         """Test the expected build packages for building the Ubuntu kernel."""
@@ -181,7 +208,7 @@ class TestPluginUbuntuCoreInitrd:
             new_dir, project_base=base, project_build_for_arch=build_for_arch
         )
         expected_cmds = [
-            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/modules | head -n1)",
+            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/lib/modules | head -n1)",
             "TEMPLATE=${CRAFT_PART_BUILD}/template",
             "SRC=${CRAFT_PART_SRC}/usr/lib/ubuntu-core-initramfs",
             "FIRMWARE_DIR=${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}",
@@ -194,21 +221,27 @@ class TestPluginUbuntuCoreInitrd:
             # Copy the target ubuntu-core-initramfs to $template/main
             "cp -a ${SRC} ${TEMPLATE}",
         ]
+        # TODO(esh) do we need to check for the existence of `firmware`. Not
+        # all kernel builds will have explicit firmware files.
         expected_cmds += [
             'if [ -d "${FIRMWARE_DIR}" ] && '
             '[ -n "$(find ${FIRMWARE_DIR} -mindepth 1 -maxdepth 1 -print -quit)" ]; '
             "then",
-            'FIRWARE_OPTION="--firmwaredir ${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}"',
-        ]
-        # TODO(esh) do we need to check for the existence of `firmware`. Not
-        # all kernel builds will have explicit firmware files.
-        expected_cmds += [
             "ubuntu-core-initramfs create-initrd "
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI}"
-            "${FIRMWARE_OPTION}",
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "--firmwaredir ${FIRMWARE_DIR}",
+            "else",
+            "ubuntu-core-initramfs create-initrd "
+            "--output ${CRAFT_PART_BUILD}/initrd.img "
+            "--skeleton ${TEMPLATE} "
+            "--kernelver ${KERNEL_ABI} "
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "fi",
+        ]
+        expected_cmds += [
             "mv ${CRAFT_PART_BUILD}/initrd.img-${KERNEL_ABI} \
                 ${CRAFT_PART_INSTALL}/initrd.img",
         ]
@@ -236,7 +269,7 @@ class TestPluginUbuntuCoreInitrd:
             properties=properties,
         )
         expected_cmds = [
-            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/modules | head -n1)",
+            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/lib/modules | head -n1)",
             "TEMPLATE=${CRAFT_PART_BUILD}/template",
             "SRC=${CRAFT_PART_SRC}/usr/lib/ubuntu-core-initramfs",
             "FIRMWARE_DIR=${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}",
@@ -245,21 +278,27 @@ class TestPluginUbuntuCoreInitrd:
             # Copy the target ubuntu-core-initramfs to $template/main
             "cp -a ${SRC} ${TEMPLATE}",
         ]
+        # TODO(esh) do we need to check for the existence of `firmware`. Not
+        # all kernel builds will have explicit firmware files.
         expected_cmds += [
             'if [ -d "${FIRMWARE_DIR}" ] && '
             '[ -n "$(find ${FIRMWARE_DIR} -mindepth 1 -maxdepth 1 -print -quit)" ]; '
             "then",
-            'FIRWARE_OPTION="--firmwaredir ${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}"',
-        ]
-        # TODO(esh) do we need to check for the existence of `firmware`. Not
-        # all kernel builds will have explicit firmware files.
-        expected_cmds += [
             "ubuntu-core-initramfs create-initrd "
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI}"
-            "${FIRMWARE_OPTION}",
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "--firmwaredir ${FIRMWARE_DIR}",
+            "else",
+            "ubuntu-core-initramfs create-initrd "
+            "--output ${CRAFT_PART_BUILD}/initrd.img "
+            "--skeleton ${TEMPLATE} "
+            "--kernelver ${KERNEL_ABI} "
+            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "fi",
+        ]
+        expected_cmds += [
             "mv ${CRAFT_PART_BUILD}/initrd.img-${KERNEL_ABI} \
                 ${CRAFT_PART_INSTALL}/initrd.img",
         ]

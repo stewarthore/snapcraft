@@ -263,7 +263,7 @@ class TestPluginUbuntuKenrel:
         get_project_info_parameters(),
         ids=get_test_fixture_ids(),
     )
-    def test_get_pull_commands_with_release_name(
+    def test_get_pull_commands_with_release_name_source_build(
         self, base, build_for_arch, new_dir, setup_method_fixture
     ):
         """Test the expected pull commands when release-name provided."""
@@ -290,7 +290,34 @@ class TestPluginUbuntuKenrel:
         get_project_info_parameters(),
         ids=get_test_fixture_ids(),
     )
-    def test_get_build_commands_contains_common_commands(
+    def test_get_pull_commands_with_release_name_debpkg_binary(
+        self, base, build_for_arch, new_dir, setup_method_fixture
+    ):
+        """Test the expected pull commands when release-name provided."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+        }
+        plugin = setup_method_fixture(
+            new_dir,
+            project_base=base,
+            project_build_for_arch=build_for_arch,
+            properties=properties,
+        )
+        result = plugin.get_pull_commands()
+        assert result == [
+            "git clone "
+            "--depth=1 "
+            "--branch=master-next "
+            "https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy .",
+        ]
+
+    @pytest.mark.parametrize(
+        "base, build_for_arch",
+        get_project_info_parameters(),
+        ids=get_test_fixture_ids(),
+    )
+    def test_get_build_commands_source_build_common(
         self, base, build_for_arch, new_dir, setup_method_fixture
     ):
         """test the expected pull commands when release-name provided."""
@@ -304,6 +331,7 @@ class TestPluginUbuntuKenrel:
             project_build_for_arch=build_for_arch,
             properties=properties,
         )
+
         common_cmd_subset1 = [
             "env",
             "rsync -aH $CRAFT_PART_SRC/ $CRAFT_PART_BUILD/kernel",
@@ -327,10 +355,10 @@ class TestPluginUbuntuKenrel:
                 cp -lr debian/${pkg}-${KERNEL_ABI}/* ${CRAFT_PART_INSTALL}/
             done
             mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}
-            ln -s ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
+            ln -f ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
             depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
-            mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/modules
+            #mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/modules
             DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
             if [ -d ${DTBS} ]; then
                 mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
