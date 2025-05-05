@@ -290,7 +290,7 @@ class BuildCommandGenerator:
                 cp -lr debian/${pkg}-${KERNEL_ABI}/* ${CRAFT_PART_INSTALL}/
             done
             mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}
-            ln -f ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
+            ln -f ${CRAFT_PART_INSTALL}/vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
             depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
             DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
