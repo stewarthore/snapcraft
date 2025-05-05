@@ -166,6 +166,7 @@ class BuildCommandGenerator:
         """Extract kernel binary package contents."""
         cmds = self._common()
         cmds += get_package_kernel_abi_commands()
+        # Unpack the deb packages to a working arena
         cmds += [
             """
             rm -fr unpacked-*
@@ -179,30 +180,40 @@ class BuildCommandGenerator:
             #    mv ${unpack_path}/lib/modules/* ${CRAFT_PART_INSTALL}/modules/
             #done
             """,
+        ]
+        # Copy across the contents to the install directory and run depmod
+        cmds += [
             "mv unpacked-linux-image/* ${CRAFT_PART_INSTALL}",
             "mkdir ${CRAFT_PART_INSTALL}/lib",
-            "mv unpacked-linux-modules/lib/modules ${CRAFT_PART_INSTALL}/lib/modules",
-            "pushd .",
-            "cd ${CRAFT_PART_INSTALL}",
+            "mv unpacked-linux-modules/lib/modules ${CRAFT_PART_INSTALL}/lib/",
+            "mv unpacked-linux-modules/boot/* ${CRAFT_PART_INSTALL}/boot/",
+            "depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}-${FLAVOUR}",
+        ]
+        # Clean up the install directory.
+        # The upstream kernel installs under $INSTALL_MOD_PATH/lib/modules/
+        # but snapd expects modules/ and firmware/ and boot/* files under
+        # package root.
+        # See _kernel_build.py as per existing kernel plugin.
+        cmds += [
+            "mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}/",
             (
-                "ln -f ./boot/vmlinuz-${KERNEL_ABI}-${FLAVOUR} "
+                "ln -f ${CRAFT_PART_INSTALL}/vmlinuz-${KERNEL_ABI}-${FLAVOUR} "
                 "${CRAFT_PART_INSTALL}/kernel.img"
             ),
-            "popd",
-            "depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}-${FLAVOUR}",
-            "DTBS=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree",
+            "mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/",
+            # Device tree
             """
-            if [ -d ${DTBS} ]; then
-                mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
-            fi
+            DTBS=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
+            [ -d ${DTBS} ] && mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
             """,
-            "FIRMWARE=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}",
+            # Firmware
             """
-            if [ -d ${FIRMWARE} ]; then
-                mv ${FIRMWARE}/ ${CRAFT_PART_INSTALL}/firmware/
-            fi
+            FIRMWARE=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}
+            [ -d ${FIRMWARE} ] && mv ${FIRMWARE} ${CRAFT_PART_INSTALL}/firmware
             """,
+            "rm -rf ${CRAFT_PART_INSTALL}/boot",
         ]
+
         return cmds
 
     def ubuntu_source_tree(self) -> list[str]:
@@ -211,7 +222,7 @@ class BuildCommandGenerator:
         cmds += [
             ". debian/debian.env",
             "deb_ver=$(dpkg-parsechangelog -l ${DEBIAN}/changelog -S version)",
-            "KERNEL_ABI=$(echo ${deb_ver} | cut -d. -f1-3)-${FLAVOUR}",
+            "KERNEL_ABI=$(echo ${deb_ver} | cut -d. -f1-3)",
         ]
         if self.options.ubuntu_kernel_tools:
             cmds += [
@@ -280,30 +291,45 @@ class BuildCommandGenerator:
             "fakeroot debian/rules printenv",
             "debian/rules build-$FLAVOUR",
             """
-            if [ -d debian/linux-image-unsigned-${KERNEL_ABI} ]; then
+            if [ -d debian/linux-image-unsigned-${KERNEL_ABI}-${FLAVOUR} ]; then
                 IMAGE_PKG=linux-image-unsigned
             else
                 IMAGE_PKG=linux-image
             fi
 
             for pkg in $IMAGE_PKG linux-modules linux-buildinfo; do
-                cp -lr debian/${pkg}-${KERNEL_ABI}/* ${CRAFT_PART_INSTALL}/
+                cp -lr debian/${pkg}-${KERNEL_ABI}-${FLAVOUR}/* ${CRAFT_PART_INSTALL}/
             done
-            mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}
-            ln -f ${CRAFT_PART_INSTALL}/vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
-            depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
-            DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
-            if [ -d ${DTBS} ]; then
-                mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
-            fi
-            FIRMWARE=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}
-            if [ -d ${FIRMWARE} ]; then
-                mv ${FIRMWARE}/ ${CRAFT_PART_INSTALL}/firmware/
-            fi
-            cp LICENSES/preferred/GPL-2.0 ${CRAFT_PART_INSTALL}/GPL-2
+            # create symlinks for modules for convenience
+            depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}-${FLAVOUR}
             """,
         ]
+        # Clean up the install directory.
+        # The upstream kernel installs under $INSTALL_MOD_PATH/lib/modules/
+        # but snapd expects modules/ and firmware/ and boot/* files under
+        # package root.
+        # See _kernel_build.py as per existing kernel plugin.
+        cmds += [
+            "mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}/",
+            (
+                "ln -f ${CRAFT_PART_INSTALL}/vmlinuz-${KERNEL_ABI}-${FLAVOUR} "
+                "${CRAFT_PART_INSTALL}/kernel.img"
+            ),
+            "mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/",
+            # Device tree
+            """
+            DTBS=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
+            [ -d ${DTBS} ] && mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
+            """,
+            # Firmware
+            """
+            FIRMWARE=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}
+            [ -d ${FIRMWARE} ] && mv ${FIRMWARE} ${CRAFT_PART_INSTALL}/firmware
+            """,
+            "rm -rf ${CRAFT_PART_INSTALL}/boot",
+        ]
+
         return cmds
 
 

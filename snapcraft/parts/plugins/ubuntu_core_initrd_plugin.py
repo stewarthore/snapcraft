@@ -94,10 +94,10 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
         # If we have
 
         cmds = [
-            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/lib/modules | head -n1)",
+            "KERNEL_ABI=$(ls ${CRAFT_STAGE}/modules | head -n1)",
             "TEMPLATE=${CRAFT_PART_BUILD}/template",
             "SRC=${CRAFT_PART_SRC}/usr/lib/ubuntu-core-initramfs",
-            "FIRMWARE_DIR=${CRAFT_STAGE}/lib/firmware/${KERNEL_ABI}",
+            "FIRMWARE_DIR=${CRAFT_STAGE}/firmware/${KERNEL_ABI}",
         ]
         if not self.options.source:
             # Use the target architecture package and unpack to CRADT_PART_SRC
@@ -120,14 +120,14 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI} ",
             "--firmwaredir ${FIRMWARE_DIR}",
             "else",
             "ubuntu-core-initramfs create-initrd "
             "--output ${CRAFT_PART_BUILD}/initrd.img "
             "--skeleton ${TEMPLATE} "
             "--kernelver ${KERNEL_ABI} "
-            "--kerneldir ${CRAFT_STAGE}/lib/modules/${KERNEL_ABI} ",
+            "--kerneldir ${CRAFT_STAGE}/modules/${KERNEL_ABI} ",
             "fi",
         ]
         cmds += [
