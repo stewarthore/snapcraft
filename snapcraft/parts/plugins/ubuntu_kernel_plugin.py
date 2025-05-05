@@ -293,7 +293,6 @@ class BuildCommandGenerator:
             ln -f ./vmlinuz-${KERNEL_ABI} ${CRAFT_PART_INSTALL}/kernel.img
 
             depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}
-            #mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/modules
             DTBS=${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
             if [ -d ${DTBS} ]; then
                 mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
@@ -440,7 +439,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
                         f'echo "deb [arch={target_arch}] '
                         "http://ports.ubuntu.com/ubuntu-ports "
                         f'{self.release_name} main restricted universe multiverse" '
-                        ">> /etc/apt/sources.list.d/jammy_ports.list"
+                        f">> /etc/apt/sources.list.d/{self.release_name}_ports.list"
                     ),
                 ]
             cmds += [
@@ -458,7 +457,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
                     "cut -d' ' -f1 | "  # tokenise, space delim
                     r"sed 's/^\s*//;s/\s*$//' | "  # strip each token
                     "grep . | "  # ignore tokens without '.' (version delim)
-                    "xargs -I {} apt download {}:${TARGET+ARCH}"  # download
+                    "xargs -I {} apt download {}:${TARGET_ARCH}"  # download
                 ),
             ]
             cmds += get_package_kernel_abi_commands()
