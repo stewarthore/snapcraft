@@ -18,8 +18,10 @@
 """The kernel plugin for building Ubuntu Core kernel snaps."""
 
 import logging
+import os
 from typing import Literal, Self, cast
 
+import jinja2
 import pydantic
 from craft_parts import infos, plugins
 from overrides import overrides
@@ -507,13 +509,57 @@ class UbuntuKernelPlugin(plugins.Plugin):
         logger.info("*****************************")
         logger.info("self.options.source = %", self.options.source)
         if self.options.ubuntu_kernel_use_binary_package:
-            cmds = self.build_commands.ubuntu_binary_packages()
+            template_file = "kernel/kernel_build_from_deb.sh.j2"
         else:
-            cmds = self.build_commands.ubuntu_source_tree()
-        logger.info("COMMANDS:\n%s", cmds)
-        logger.info("===============================")
-        return cmds
-        # return self._get_from_source_build_commands()
+            template_file = "kernel/kernel_build_from_source.sh.j2"
+        env = jinja2.Environment(
+            loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
+        )
+        template = env.get_template(template_file)
+        script = template.render(
+            {
+                "CRAFT_ARCH_BUILD_ON": self.part_info.arch_build_on,
+                "CRAFT_ARCH_BUILD_FOR": self.part_info.arch_build_for,
+                "CRAFT_ARCH_TRIPLET_BUILD_FOR": self.part_info.arch_triplet_build_for,
+                "SNAP_VERSION": os.environ["SNAP_VERSION"],
+                "SNAP_CONTEXT": os.environ["SNAP_CONTEXT"],
+                "SNAP": os.environ["SNAP"],
+                "is_cross_compiling": self.part_info.is_cross_compiling,
+                "kernel_flavour": self.options.ubuntu_kernel_flavour,
+                "has_ubuntu_kernel_tools": bool(self.options.ubuntu_kernel_tools),
+                "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
+                "has_ubuntu_kernel_image_target": bool(
+                    self.options.ubuntu_kernel_image_target
+                ),
+                "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
+                "has_ubuntu_kernel_config_fragments": bool(
+                    self.options.ubuntu_kernel_config
+                ),
+                "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
+                "has_ubuntu_kernel_defconfig": bool(
+                    self.options.ubuntu_kernel_defconfig
+                ),
+                "ubuntu_kernel_defconfig": self.options.ubuntu_kernel_defconfig,
+            }
+        )
+        return [script]
+
+    #
+    #
+    #        if self.options.ubuntu_kernel_use_binary_package:
+    #            cmds = self.build_commands.ubuntu_binary_packages()
+    #        else:
+    #            cmds = self.build_commands.ubuntu_source_tree()
+    #        logger.info("COMMANDS:\n%s", cmds)
+    #        logger.info("===============================")
+    #        return [
+    #            "#!/usr/bin/python3",
+    #            """
+    #            print("Hello Python World!")
+    #            """,
+    #        ]
+    # return cmds
+    # return self._get_from_source_build_commands()
 
     @classmethod
     def get_out_of_source_build(cls) -> bool:
