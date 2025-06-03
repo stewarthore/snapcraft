@@ -1,0 +1,36 @@
+{% if ubuntu_kernel_use_binary_package %}
+
+{% if is_cross_compiling %}
+echo \
+    "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
+{{ ubuntu_kernel_release_name }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+{% endif %}
+
+apt-get update
+
+FLAVOUR={{ ubuntu_kernel_flavour }}
+TARGET_ARCH={{ target_arch }}
+
+apt show linux-image-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+
+apt show linux-image-{{ ubuntu_kernel_flavour }}:{{ target_arch }} |
+    grep '^Depends:' |                  # Find Depends line
+    sed 's/^Depends: //' |              # strip 'Depends: '
+    sed 's/linux-firmware//' |          # strip linux-firmware
+    tr ',' '\n' |                       # strip ', ' or '\n'
+    sed 's/^\s*//;s/\s*$//' |           # strip line
+    cut -d' ' -f1 |                     # tokenise, space delim
+    sed 's/^\s*//;s/\s*$//' |           # strip each token
+    grep . |                            # ignore tokens without '.' (version delim)
+    xargs -I {} apt download {}:{{ target_arch }}  # download
+
+KERNEL_ABI=$(ls linux-image-*.deb | cut -d '-' -f3-4)
+apt download linux-modules-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+
+{% else %}
+git clone --depth=1 --branch=master-next {{ source_repo_url }} .
+{%  endif %}
+
+# TODO(esh) remove this debug noise
+pwd
+ls -larth

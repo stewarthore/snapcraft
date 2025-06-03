@@ -18,8 +18,6 @@ cd "$CRAFT_PART_BUILD"/kernel
 deb_ver=$(dpkg-parsechangelog -l ${DEBIAN}/changelog -S version)
 KERNEL_ABI=$(echo ${deb_ver} | cut -d. -f1-3)
 
-
-
 {% if has_ubuntu_kernel_tools %}
     echo "Adding kernel tools selection"
     sed -i 's/^\\s*do_tools_\\(.*\\)\\s*=.*/do_tools_\\1 = false/g'
