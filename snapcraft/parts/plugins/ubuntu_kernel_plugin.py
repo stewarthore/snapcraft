@@ -204,6 +204,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
             "libaudit-dev",
             "bc",
             "gawk",
+            "git",
             "libudev-dev",
             "autoconf",
             "automake",
@@ -220,6 +221,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
             "lz4",
             "python3",
             "dwarfdump",
+            "shellcheck",  # TODO(esh) remove, used to check scripts during build
         }
 
         if self.part_info.base == "core24":
@@ -250,18 +252,10 @@ class UbuntuKernelPlugin(plugins.Plugin):
 
     @overrides
     def get_build_environment(self) -> dict[str, str]:
-        env = {
-            "FLAVOUR": self.options.ubuntu_kernel_flavour,
-        }
-        if self.part_info.is_cross_compiling:
-            logger.info("Setting cross build env...")
-            env |= {
-                "ARCH": self.part_info.arch_build_for,
-                # generated with self.part_info.target_arch,
-                "CROSS_COMPILE": f"{self.part_info.arch_triplet_build_for}-",
-            }
-        return env
+        """Returns additional build environment variables."""
+        return {}
 
+    @overrides
     def get_pull_commands(self) -> list[str]:
         """Clone the repository when no source is provided."""
         if self.options.source:
@@ -277,7 +271,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
                 "ubuntu_kernel_release_name": self.release_name,
                 "is_cross_compiling": self.part_info.is_cross_compiling,
-                "target_arch": self.part_info.arch_build_for,
+                "target_arch": self.part_info.target_arch,
                 "ubuntu_kernel_flavour": self.options.ubuntu_kernel_flavour,
                 "source_repo_url": source_repo_url,
             }
@@ -299,28 +293,34 @@ class UbuntuKernelPlugin(plugins.Plugin):
         template = env.get_template(template_file)
         script = template.render(
             {
-                "craft_arch_build_on": self.part_info.arch_build_on,
                 "craft_arch_build_for": self.part_info.arch_build_for,
+                "craft_arch_build_on": self.part_info.arch_build_on,
                 "craft_arch_triplet_build_for": self.part_info.arch_triplet_build_for,
-                "snap_version": os.environ["SNAP_VERSION"],
-                "snap_context": os.environ["SNAP_CONTEXT"],
-                "snap": os.environ["SNAP"],
-                "is_cross_compiling": self.part_info.is_cross_compiling,
-                "ubuntu_kernel_flavour": self.options.ubuntu_kernel_flavour,
-                "has_ubuntu_kernel_tools": bool(self.options.ubuntu_kernel_tools),
-                "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
-                "has_ubuntu_kernel_image_target": bool(
-                    self.options.ubuntu_kernel_image_target
-                ),
-                "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
+                "craft_arch_triplet_build_on": self.part_info.arch_triplet_build_on,
+                "craft_part_build_dir": self.part_info.part_build_dir,
+                "craft_part_install_dir": self.part_info.part_install_dir,
+                "craft_part_src_dir": self.part_info.part_src_dir,
+                "craft_project_dir": self.part_info.project_dir,
                 "has_ubuntu_kernel_config_fragments": bool(
                     self.options.ubuntu_kernel_config
                 ),
-                "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
                 "has_ubuntu_kernel_defconfig": bool(
                     self.options.ubuntu_kernel_defconfig
                 ),
+                "has_ubuntu_kernel_image_target": bool(
+                    self.options.ubuntu_kernel_image_target
+                ),
+                "has_ubuntu_kernel_tools": bool(self.options.ubuntu_kernel_tools),
+                "is_cross_compiling": self.part_info.is_cross_compiling,
+                "snap_context": os.environ["SNAP_CONTEXT"],
+                "snap_data_path": os.environ["SNAP"],
+                "snap_version": os.environ["SNAP_VERSION"],
+                "target_arch": self.part_info.target_arch,
+                "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
                 "ubuntu_kernel_defconfig": self.options.ubuntu_kernel_defconfig,
+                "ubuntu_kernel_flavour": self.options.ubuntu_kernel_flavour,
+                "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
+                "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
             }
         )
         return [script]
