@@ -4,46 +4,51 @@
 # Build on:  {{ craft_arch_build_on }}
 # Build for: {{ craft_arch_build_for }}
 # Snapcraft version: {{ snap_version }}
-# Snap data: {{ snap }}
+# Snap data: {{ snap_data_path }}
 # Snap context: {{ snap_context }}
 # ----
 # TODO(esh) remove; handy for debug, --debug and --shell has a different env
-
+# Ignore SC1091 "Not following: x/y/z.sh was not specified as input"
+shellcheck -e SC1091 "$0"
 env
-rsync -aH "$CRAFT_PART_SRC"/ "$CRAFT_PART_BUILD"/kernel
-cd "$CRAFT_PART_BUILD"/kernel
 
-KERNEL_ABI=$(ls linux-image-*.deb | cut -d '-' -f3-4)
+rsync -aH "{{ craft_part_src_dir }}"/ "{{ craft_part_build_dir }}"/kernel
+cd "{{ craft_part_build_dir }}"/kernel
+
 
 rm -fr unpacked-*
-rm -fr ${CRAFT_PART_INSTALL}/*
+rm -fr {{ craft_part_install_dir }}/*
 dpkg-deb -R linux-image-*.deb unpacked-linux-image
-dpkg-deb -R linux-modules-${KERNEL_ABI}*.deb unpacked-linux-modules
+KERNEL_ABI=$(grep "Version: " unpacked-linux-image/DEBIAN/control |
+    sed 's/Version: \(.*\)$/\1/g' |
+    cut -d. -f1-3
+)
+dpkg-deb -R linux-modules-"${KERNEL_ABI}"*.deb unpacked-linux-modules
 
 
 # ITERATE OVER DKMS PACKAGES
 #for pkg in $(ls linux-modules-*.deb); do
 #    unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
 #    dpkg-deb -R "$pkg" "$unpack_path"/
-#    mv ${unpack_path}/lib/modules/* ${CRAFT_PART_INSTALL}/modules/
+#    mv ${unpack_path}/lib/modules/* {{ craft_part_install_dir }}/modules/
 #done
 
 # Unpack the linux deb binaries to snap package structure
-mv unpacked-linux-image/* ${CRAFT_PART_INSTALL}
-mkdir ${CRAFT_PART_INSTALL}/lib
-mv unpacked-linux-modules/lib/modules ${CRAFT_PART_INSTALL}/lib/
-mv unpacked-linux-modules/boot/* ${CRAFT_PART_INSTALL}/boot/
-depmod -b ${CRAFT_PART_INSTALL} ${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}
+mv unpacked-linux-image/* {{ craft_part_install_dir }}
+mkdir {{ craft_part_install_dir }}/lib
+mv unpacked-linux-modules/lib/modules {{ craft_part_install_dir }}/lib/
+mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
+depmod -b {{ craft_part_install_dir }} "${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}
 
-mv ${CRAFT_PART_INSTALL}/boot/* ${CRAFT_PART_INSTALL}/
-ln -f ${CRAFT_PART_INSTALL}/vmlinuz-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }} ${CRAFT_PART_INSTALL}/kernel.img
-mv ${CRAFT_PART_INSTALL}/lib/modules ${CRAFT_PART_INSTALL}/
+mv {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
+ln -f {{ craft_part_install_dir }}/vmlinuz-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
+mv {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/
 
 # Device tree
-DTBS=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}/device-tree
-[ -d ${DTBS} ] && mv ${DTBS} ${CRAFT_PART_INSTALL}/dtbs
+DTBS=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"/device-tree
+[ -d "${DTBS}" ] && mv "${DTBS}" {{ craft_part_install_dir }}/dtbs
 
 # Firmware
-FIRMWARE=unpacked-linux-firmware/${CRAFT_PART_INSTALL}/lib/firmware/${KERNEL_ABI}
-[ -d ${FIRMWARE} ] && mv ${FIRMWARE} ${CRAFT_PART_INSTALL}/firmware
-rm -rf ${CRAFT_PART_INSTALL}/boot
+FIRMWARE=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"
+[ -d "${FIRMWARE}" ] && mv "${FIRMWARE}" {{ craft_part_install_dir }}/firmware
+rm -rf {{ craft_part_install_dir }}/boot
