@@ -27,6 +27,7 @@ from .flutter_plugin import FlutterPlugin
 from .kernel_plugin import KernelPlugin
 from .matter_sdk_plugin import MatterSdkPlugin
 from .python_plugin import PythonPlugin
+from .ubuntu_core_initrd_plugin import UbuntuCoreInitrdPlugin
 from .ubuntu_kernel_plugin import UbuntuKernelPlugin
 
 
@@ -41,6 +42,7 @@ def get_plugins(core22: bool) -> dict[str, PluginType]:
         "flutter": FlutterPlugin,
         "python": PythonPlugin,
         "matter-sdk": MatterSdkPlugin,
+        "ubuntu-core-initrd": UbuntuCoreInitrdPlugin,
         "ubuntu-kernel": UbuntuKernelPlugin,
     } | python_common.get_python_plugins()
 
