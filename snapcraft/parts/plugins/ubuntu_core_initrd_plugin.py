@@ -46,6 +46,7 @@ class UbuntuCoreInitrdPluginProperties(
         "xz",
         "uncompressed",
     ] = "uncompressed"
+    ubuntu_core_initrd_build_efi_image: bool = False
 
 
 class UbuntuCoreInitrdPlugin(plugins.Plugin):
@@ -75,6 +76,7 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             "lz4",
             "lzma",
             "lzop",
+            "ubuntu-core-initramfs",
             "xz-utils",
             "zstd",
         }
@@ -119,6 +121,17 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
             loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
         )
         script_template = env.get_template(script_template_file)
+
+        signing_key_path = (
+            "/usr/lib/ubuntu-core-initramfs/snakeoil/PkKek-1-snakeoil.key"
+        )
+        signing_cert_path = (
+            "/usr/lib/ubuntu-core-initramfs/snakeoil/PkKek-1-snakeoil.pem"
+        )
+        if self.options.ubuntu_core_initrd_build_efi_image:
+            signing_key_path = f"{self.part_info.part_build_dir}/efi-signing-key.pem"
+            signing_cert_path = f"{self.part_info.part_build_dir}/efi-certificate.pem"
+
         script = script_template.render(
             {
                 "craft_arch_build_for": self.part_info.arch_build_for,
@@ -137,6 +150,8 @@ class UbuntuCoreInitrdPlugin(plugins.Plugin):
                 "kernel_module_dir": kernel_module_dir,
                 "snap_context": os.environ["SNAP_CONTEXT"],
                 "snap_data_path": os.environ["SNAP"],
+                "signing_key_path": signing_key_path,
+                "signing_cert_path": signing_cert_path,
                 "snap_version": os.environ["SNAP_VERSION"],
                 "target_arch": self.part_info.target_arch,
                 "template_dir": template_dir,

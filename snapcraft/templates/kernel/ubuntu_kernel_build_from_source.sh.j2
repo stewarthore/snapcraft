@@ -19,6 +19,16 @@ cd "{{ craft_part_build_dir }}"/kernel
 deb_ver=$(dpkg-parsechangelog -l "${DEBIAN}"/changelog -S version)
 KERNEL_ABI=$(echo "${deb_ver}" | cut -d. -f1-3)
 
+{% if has_ubuntu_kernel_dkms %}
+# Add deb-src to the sources.list
+sed -i 's/#deb-src \(.*\)$/deb-src \1/g' /etc/apt/sources.list
+apt update
+{% for dkms in ubuntu_kernel_dkms %}
+    echo "Downloading dkms module source ${dkms}"
+    apt source "${dkms}"
+{% endfor %}
+{% endif %}
+
 {% if has_ubuntu_kernel_tools %}
     echo "Adding kernel tools selection"
     sed -i 's/^\\s*do_tools_\\(.*\\)\\s*=.*/do_tools_\\1 = false/g'
@@ -29,6 +39,7 @@ KERNEL_ABI=$(echo "${deb_ver}" | cut -d. -f1-3)
         debian.master/rules.d/{{ target_arch }}.mk
     {% endfor %}
 {% endif %}
+
 
 {% if has_ubuntu_kernel_image_target %}
     target_image={{ ubuntu_kernel_image_target }}
@@ -41,7 +52,7 @@ KERNEL_ABI=$(echo "${deb_ver}" | cut -d. -f1-3)
 {% endif %}
 
 {% if is_cross_compiling %}
-    export $(dpkg-architecture -a{{ target_arch }})
+    export "$(dpkg-architecture -a{{ target_arch }})"
 {% endif %}
 
 {% if has_ubuntu_kernel_config_fragments %}
@@ -74,6 +85,7 @@ KERNEL_ABI=$(echo "${deb_ver}" | cut -d. -f1-3)
             --import {{ craft_project_dir }}/{{ ubuntu_kernel_defconfig }}
 {% endif %}
 
+
 fakeroot debian/rules clean
 fakeroot debian/rules printenv
 debian/rules build-{{ ubuntu_kernel_flavour }}
@@ -83,22 +95,27 @@ else
     IMAGE_PKG=linux-image
 fi
 
-for pkg in $IMAGE_PKG linux-modules linux-buildinfo; do
+for pkg in "$IMAGE_PKG" linux-modules linux-buildinfo; do
     cp -lr debian/"${pkg}"-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}/* {{ craft_part_install_dir }}/
 done
 
 # create symlinks for modules for convenience
 depmod -b {{ craft_part_install_dir }} "${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}
 mv {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
-ln -f {{ craft_part_install_dir }}/vmlinuz-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
+ln -f \
+    {{ craft_part_install_dir }}/vmlinuz-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }} \
+    {{ craft_part_install_dir }}/kernel.img
 mv {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/
 
 # Device tree
 DTBS=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"/device-tree
 [ -d "${DTBS}" ] && mv "${DTBS}" {{ craft_part_install_dir }}/dtbs
+
 # Firmware
 FIRMWARE=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"
 [ -d "${FIRMWARE}" ] && mv "${FIRMWARE}" {{ craft_part_install_dir }}/firmware
+
+cp LICENSES/preferred/GPL-2.0 {{ craft_part_insetall_dir }}/GPL-2
 
 # Cleanup
 rm -rf {{ craft_part_install_dir }}/boot

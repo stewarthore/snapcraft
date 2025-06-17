@@ -310,6 +310,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "has_ubuntu_kernel_image_target": bool(
                     self.options.ubuntu_kernel_image_target
                 ),
+                "has_ubuntu_kernel_dkms": bool(self.options.ubuntu_kernel_dkms),
                 "has_ubuntu_kernel_tools": bool(self.options.ubuntu_kernel_tools),
                 "is_cross_compiling": self.part_info.is_cross_compiling,
                 "snap_context": os.environ["SNAP_CONTEXT"],
