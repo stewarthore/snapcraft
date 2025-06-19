@@ -12,12 +12,23 @@
 shellcheck -e SC1091 "$0"
 env
 
-rsync -aH "{{ craft_part_src_dir }}"/ "{{ craft_part_build_dir }}"/kernel
-cd "{{ craft_part_build_dir }}"/kernel
-
-
-rm -fr unpacked-*
+# TODO(esh) these two `rm` are for debug only, rely on `snapcraft clean`
+# instead
+cd {{ craft_part_build_dir }}
+rm -fr {{ craft_part_build_dir }}/unpacked-*
 rm -fr {{ craft_part_install_dir }}/*
+
+mkdir {{ craft_part_build_dir }}/kernel
+# Get source deb packages into build arena
+{% if ubuntu_kernel_use_binary_package %}
+    rsync -aH {{ craft_part_src_dir }}/*.deb {{ craft_part_build_dir }}/kernel
+{% else %}
+    {% include "kernel/ubuntu_kernel_build_kernel_debs.sh.j2" %}
+    mv {{ craft_part_build_dir }}/*.deb {{ craft_part_build_dir}}/kernel
+{% endif %}
+
+cd {{ craft_part_build_dir }}/kernel
+
 dpkg-deb -R linux-image-*.deb unpacked-linux-image
 KERNEL_ABI=$(grep "Version: " unpacked-linux-image/DEBIAN/control |
     sed 's/Version: \(.*\)$/\1/g' |
@@ -26,13 +37,6 @@ KERNEL_ABI=$(grep "Version: " unpacked-linux-image/DEBIAN/control |
 dpkg-deb -R linux-modules-"${KERNEL_ABI}"*.deb unpacked-linux-modules
 
 
-# ITERATE OVER DKMS PACKAGES
-#for pkg in $(ls linux-modules-*.deb); do
-#    unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
-#    dpkg-deb -R "$pkg" "$unpack_path"/
-#    mv ${unpack_path}/lib/modules/* {{ craft_part_install_dir }}/modules/
-#done
-
 # Unpack the linux deb binaries to snap package structure
 mv unpacked-linux-image/* {{ craft_part_install_dir }}
 mkdir {{ craft_part_install_dir }}/lib
@@ -40,6 +44,21 @@ mv unpacked-linux-modules/lib/modules {{ craft_part_install_dir }}/lib/
 mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
 depmod -b {{ craft_part_install_dir }} "${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}
 
+{% for dkms in ubuntu_kernel_dkms %}
+dpkg-deb -R linux-header-*.deb unpacked-linux-header
+
+
+{% endfor %}
+
+# ITERATE OVER DKMS PACKAGES
+#for pkg in $(ls linux-modules-*.deb); do
+#    unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
+#    dpkg-deb -R "$pkg" "$unpack_path"/
+#    mv ${unpack_path}/lib/modules/* {{ craft_part_install_dir }}/modules/
+#done
+
+
+# Manipulate stock kernel layout to the snapcraft package layout.
 mv {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
 ln -f {{ craft_part_install_dir }}/vmlinuz-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
 mv {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/

@@ -22,6 +22,7 @@ KERNEL_ABI=$(apt show linux-image-{{ ubuntu_kernel_flavour }}:{{ target_arch }}/
     cut -d. -f1-4 |
     sed 's/\([0-9]\+\.[0-9]\+\.[0-9]\+\).\([0-9]\+\).*$/\1-\2/g'
 )
+
 echo "Kernel ABI: ${KERNEL_ABI}"
 apt download linux-image-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
 apt download linux-modules-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
@@ -32,6 +33,14 @@ apt download linux-firmware
 git clone --depth=1 --branch=master-next {{ source_repo_url }} .
 {%  endif %}
 
-# TODO(esh) remove this debug noise
-pwd
-ls -larth
+# {% if ubuntu_kernel_dkms|length > 0 %}
+# # Headers are required to build the dkms sources
+# apt download linux-headers-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+# # Add deb-src to the sources.list
+# sed -i 's/#deb-src \(.*\)$/deb-src \1/g' /etc/apt/sources.list
+# apt update
+# {% for dkms in ubuntu_kernel_dkms %}
+#     echo "Downloading dkms module source ${dkms}"
+#     apt source "${dkms}"
+# {% endfor %}
+# {% endif %}

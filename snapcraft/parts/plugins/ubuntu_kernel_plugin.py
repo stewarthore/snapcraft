@@ -253,7 +253,16 @@ class UbuntuKernelPlugin(plugins.Plugin):
     @overrides
     def get_build_environment(self) -> dict[str, str]:
         """Returns additional build environment variables."""
-        return {}
+        return (
+            {}
+            if not self.part_info.is_cross_compiling
+            else {
+                "ARCH": self.part_info.arch_build_for,
+                "CROSS_COMPILE": self.part_info.arch_triplet_build_for,
+                "DEB_HOST_ARCH": self.part_info.arch_build_for,
+                "DEB_BUILD_ARCH": self.part_info.arch_build_on,
+            }
+        )
 
     @overrides
     def get_pull_commands(self) -> list[str]:
@@ -283,10 +292,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
         logger.info("Setting build commands...")
         logger.info("*****************************")
         logger.info("self.options.source = %", self.options.source)
-        if self.options.ubuntu_kernel_use_binary_package:
-            template_file = "kernel/ubuntu_kernel_build_from_deb.sh.j2"
-        else:
-            template_file = "kernel/ubuntu_kernel_build_from_source.sh.j2"
+        template_file = "kernel/ubuntu_kernel_get_build_commands.sh.j2"
         env = jinja2.Environment(
             loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
         )
@@ -310,8 +316,6 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "has_ubuntu_kernel_image_target": bool(
                     self.options.ubuntu_kernel_image_target
                 ),
-                "has_ubuntu_kernel_dkms": bool(self.options.ubuntu_kernel_dkms),
-                "has_ubuntu_kernel_tools": bool(self.options.ubuntu_kernel_tools),
                 "is_cross_compiling": self.part_info.is_cross_compiling,
                 "snap_context": os.environ["SNAP_CONTEXT"],
                 "snap_data_path": os.environ["SNAP"],
@@ -319,9 +323,11 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "target_arch": self.part_info.target_arch,
                 "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
                 "ubuntu_kernel_defconfig": self.options.ubuntu_kernel_defconfig,
+                "ubuntu_kernel_dkms": self.options.ubuntu_kernel_dkms,
                 "ubuntu_kernel_flavour": self.options.ubuntu_kernel_flavour,
                 "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
                 "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
+                "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
             }
         )
         return [script]
