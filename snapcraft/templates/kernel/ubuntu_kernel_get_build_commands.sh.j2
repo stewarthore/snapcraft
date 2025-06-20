@@ -12,29 +12,48 @@
 shellcheck -e SC1091 "$0"
 env
 
-# TODO(esh) these two `rm` are for debug only, rely on `snapcraft clean`
+# TODO(esh) these `rm` are for debug only, rely on `snapcraft clean`
 # instead
 cd {{ craft_part_build_dir }}
+rm -fr {{ craft_part_build_dir }}/kernel/
 rm -fr {{ craft_part_build_dir }}/unpacked-*
 rm -fr {{ craft_part_install_dir }}/*
 
 mkdir {{ craft_part_build_dir }}/kernel
 # Get source deb packages into build arena
 {% if ubuntu_kernel_use_binary_package %}
+    echo "(II) Using prebuilt kernel deb packages"
     rsync -aH {{ craft_part_src_dir }}/*.deb {{ craft_part_build_dir }}/kernel
 {% else %}
+    echo "(II) Building kernel deb packages from source"
     {% include "kernel/ubuntu_kernel_build_kernel_debs.sh.j2" %}
     mv {{ craft_part_build_dir }}/*.deb {{ craft_part_build_dir}}/kernel
 {% endif %}
 
+echo "(II) Building kernel snap from debian images"
+
 cd {{ craft_part_build_dir }}/kernel
 
-dpkg-deb -R linux-image-*.deb unpacked-linux-image
-KERNEL_ABI=$(grep "Version: " unpacked-linux-image/DEBIAN/control |
-    sed 's/Version: \(.*\)$/\1/g' |
-    cut -d. -f1-3
-)
-dpkg-deb -R linux-modules-"${KERNEL_ABI}"*.deb unpacked-linux-modules
+LINUX_IMAGE_DEB=$(linux-image-*.deb)
+# Ensure there is only one linux-image deb package and it really is a file
+if [ "${LINUX_IMAGE_DEB[@]}" -eq 1 ] && [ -e "${LINUX_IMAGE_DEB[0]}" ]; then
+    dpkg-deb -R "${LINUX_IMAGE_DEB[0]}" unpacked-linux-image
+else
+    echo "(EE) multiple linux image deb packages found."
+    exit 1
+fi
+
+dpkg-deb -R linux-modules-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}_${KERNEL_VERSION}_{{
+for debfile in linux-modules-*.deb; do
+    dpkg-deb -x debfile unpacked-linux-modules
+done
+
+{% for dkms in ubuntu_kernel_dkms %}
+dpkg-deb -x \
+    linux-headers-{{ kernel_abi }}_{{ kernel_version }}_all.deb unpacked-linux-header
+dpkg-deb -x \
+    linux-headers-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}_{{ kernel_version }}_{{ target_arch }}.deb
+{% endfor %}
 
 
 # Unpack the linux deb binaries to snap package structure
@@ -44,11 +63,6 @@ mv unpacked-linux-modules/lib/modules {{ craft_part_install_dir }}/lib/
 mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
 depmod -b {{ craft_part_install_dir }} "${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}
 
-{% for dkms in ubuntu_kernel_dkms %}
-dpkg-deb -R linux-header-*.deb unpacked-linux-header
-
-
-{% endfor %}
 
 # ITERATE OVER DKMS PACKAGES
 #for pkg in $(ls linux-modules-*.deb); do

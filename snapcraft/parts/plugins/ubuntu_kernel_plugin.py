@@ -19,6 +19,8 @@
 
 import logging
 import os
+import pathlib
+import re
 from typing import Literal, Self, cast
 
 import jinja2
@@ -53,8 +55,43 @@ _AVAILABLE_TOOLS = [
 ]
 
 
+def kernel_abi_from_version(kernel_version: str) -> str:
+    """Given the kernel version string extract the ABI component."""
+    rem = re.match(r"(\d+\.\d+\.\d+-\d+)\.\d+", kernel_version)
+    if not rem:
+        raise errors.SnapcraftError("Failed to parse kernel version from changelog")
+    return rem.group(1)
+
+
+def kernel_version_from_source_tree(source_root: pathlib.Path) -> str:
+    """Given a changelog file path open it and extract the kernel version."""
+    changelog_file = source_root / "debian.master" / "changelog"
+    with changelog_file.open("r") as fptr:
+        version_line = fptr.readline()
+    kernel_version = version_line.split("(")[1].split(")")[0]
+    kernel_abi = kernel_abi_from_version(kernel_version)
+    return (kernel_version, kernel_abi)
+
+
+def kernel_version_from_debpkg_file(root_dir: pathlib.Path) -> str:
+    """Get the kernel version from debian package files."""
+    version_re = re.compile(r".*(\d+\.\d+\.\d+-\d+\.\d+).*\.deb")
+    for filename in [
+        pobj.name for pobj in sorted(root_dir.iterdir()) if pobj.is_file()
+    ]:
+        rem = version_re.search(filename)
+        if not rem:
+            raise errors.SnapcraftError("Failed to parse kernel version from changelog")
+        kernel_version = rem.group(1)
+        kernel_abi = kernel_abi_from_version(kernel_version)
+        return (kernel_version, kernel_abi)
+    raise errors.SnapcraftError(
+        "Failed to identify kernel version from deb package files."
+    )
+
+
 def kernel_launchpad_repository(release_name: str) -> str:
-    """Get the kenrel launchpad repository."""
+    """Get the kernel launchpad repository."""
     return KERNEL_REPO_STEM + release_name
 
 
@@ -292,6 +329,17 @@ class UbuntuKernelPlugin(plugins.Plugin):
         logger.info("Setting build commands...")
         logger.info("*****************************")
         logger.info("self.options.source = %", self.options.source)
+
+        # Get the kernel version from the source files
+        if self.options.ubuntu_kernel_use_binary_package:
+            kernel_version, kernel_abi = kernel_version_from_debpkg_file(
+                self.part_info.part_src_dir
+            )
+        else:
+            kernel_version, kernel_abi = kernel_version_from_source_tree(
+                self.part_info.part_src_dir
+            )
+
         template_file = "kernel/ubuntu_kernel_get_build_commands.sh.j2"
         env = jinja2.Environment(
             loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
@@ -317,6 +365,13 @@ class UbuntuKernelPlugin(plugins.Plugin):
                     self.options.ubuntu_kernel_image_target
                 ),
                 "is_cross_compiling": self.part_info.is_cross_compiling,
+                "kernel_abi": kernel_abi,
+                "kernel_version": kernel_version,
+                "pkgfile_version_all": f"{kernel_abi}_{kernel_version}",
+                "pkgfile_version_flavour": (
+                    f"{kernel_abi}-{self.options.ubuntu_kernel_flavour}_"
+                    f"{kernel_version}_{self.part_info.target_arch}"
+                ),
                 "snap_context": os.environ["SNAP_CONTEXT"],
                 "snap_data_path": os.environ["SNAP"],
                 "snap_version": os.environ["SNAP_VERSION"],
