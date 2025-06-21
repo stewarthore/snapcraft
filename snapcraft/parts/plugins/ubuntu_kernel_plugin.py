@@ -80,11 +80,10 @@ def kernel_version_from_debpkg_file(root_dir: pathlib.Path) -> str:
         pobj.name for pobj in sorted(root_dir.iterdir()) if pobj.is_file()
     ]:
         rem = version_re.search(filename)
-        if not rem:
-            raise errors.SnapcraftError("Failed to parse kernel version from changelog")
-        kernel_version = rem.group(1)
-        kernel_abi = kernel_abi_from_version(kernel_version)
-        return (kernel_version, kernel_abi)
+        if rem:
+            kernel_version = rem.group(1)
+            kernel_abi = kernel_abi_from_version(kernel_version)
+            return (kernel_version, kernel_abi)
     raise errors.SnapcraftError(
         "Failed to identify kernel version from deb package files."
     )
@@ -367,7 +366,7 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "is_cross_compiling": self.part_info.is_cross_compiling,
                 "kernel_abi": kernel_abi,
                 "kernel_version": kernel_version,
-                "pkgfile_version_all": f"{kernel_abi}_{kernel_version}",
+                "pkgfile_version_all": f"{kernel_abi}_{kernel_version}_all",
                 "pkgfile_version_flavour": (
                     f"{kernel_abi}-{self.options.ubuntu_kernel_flavour}_"
                     f"{kernel_version}_{self.part_info.target_arch}"

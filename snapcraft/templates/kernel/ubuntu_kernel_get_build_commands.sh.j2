@@ -22,38 +22,33 @@ rm -fr {{ craft_part_install_dir }}/*
 mkdir {{ craft_part_build_dir }}/kernel
 # Get source deb packages into build arena
 {% if ubuntu_kernel_use_binary_package %}
-    echo "(II) Using prebuilt kernel deb packages"
     rsync -aH {{ craft_part_src_dir }}/*.deb {{ craft_part_build_dir }}/kernel
 {% else %}
-    echo "(II) Building kernel deb packages from source"
     {% include "kernel/ubuntu_kernel_build_kernel_debs.sh.j2" %}
     mv {{ craft_part_build_dir }}/*.deb {{ craft_part_build_dir}}/kernel
 {% endif %}
 
-echo "(II) Building kernel snap from debian images"
 
 cd {{ craft_part_build_dir }}/kernel
 
-LINUX_IMAGE_DEB=$(linux-image-*.deb)
-# Ensure there is only one linux-image deb package and it really is a file
-if [ "${LINUX_IMAGE_DEB[@]}" -eq 1 ] && [ -e "${LINUX_IMAGE_DEB[0]}" ]; then
-    dpkg-deb -R "${LINUX_IMAGE_DEB[0]}" unpacked-linux-image
-else
-    echo "(EE) multiple linux image deb packages found."
-    exit 1
-fi
+{% if ubuntu_kernel_use_binary_package %}
+    dpkg-deb -R \
+        linux-image-{{ pkgfile_version_flavour }}.deb \
+        unpacked-linux-image
+{% else %}
+    # Source builds are not signed yet
+    dpkg-deb -R \
+        linux-image-unsigned-{{ pkgfile_version_flavour }}.deb \
+        unpacked-linux-image
+{% endif %}
 
-dpkg-deb -R linux-modules-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}_${KERNEL_VERSION}_{{
-for debfile in linux-modules-*.deb; do
-    dpkg-deb -x debfile unpacked-linux-modules
-done
+dpkg-deb -x \
+    linux-modules-{{ pkgfile_version_flavour }}.deb \
+    unpacked-linux-modules
 
-{% for dkms in ubuntu_kernel_dkms %}
 dpkg-deb -x \
-    linux-headers-{{ kernel_abi }}_{{ kernel_version }}_all.deb unpacked-linux-header
-dpkg-deb -x \
-    linux-headers-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}_{{ kernel_version }}_{{ target_arch }}.deb
-{% endfor %}
+    linux-modules-extra-{{ pkgfile_version_flavour }}.deb \
+    unpacked-linux-modules
 
 
 # Unpack the linux deb binaries to snap package structure
@@ -61,27 +56,41 @@ mv unpacked-linux-image/* {{ craft_part_install_dir }}
 mkdir {{ craft_part_install_dir }}/lib
 mv unpacked-linux-modules/lib/modules {{ craft_part_install_dir }}/lib/
 mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
-depmod -b {{ craft_part_install_dir }} "${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}
 
+# NOTE: DKMS is not working yet. Ubuntu dkms packages all expect to build
+# against the installed kernel (build host). Fixing this requires per-dkms
+# package specific changes or building inside a qemu running the target arch.
+{% if ubuntu_kernel_dkms|length > 0 %}
+    dpkg-deb -x \
+        linux-headers-{{ pkgfile_version_all }}.deb \
+        unpacked-linux-headers
+    dpkg-deb -x \
+        linux-headers-{{ pkgfile_version_flavour }}.deb \
+        unpacked-linux-headers
 
-# ITERATE OVER DKMS PACKAGES
-#for pkg in $(ls linux-modules-*.deb); do
-#    unpack_path=unpacked-$(echo "$pkg" | cut -d '-' -f 1-2)
-#    dpkg-deb -R "$pkg" "$unpack_path"/
-#    mv ${unpack_path}/lib/modules/* {{ craft_part_install_dir }}/modules/
-#done
+    rm -fr {{ craft_part_build_dir }}/dkms
+    mkdir {{ craft_part_build_dir }}/dkms
+    mv {{ craft_part_src_dir }}/dkms/* {{ craft_part_build_dir }}/dkms/
+    cd {{ craft_part_build_dir }}/dkms
+    {% for dkms in ubuntu_kernel_dkms %}
+        echo "DKMS build for kernel build in {{ craft_part_build_dir }}
+    {% endfor %}
+    echo "DKMS unavailable, exiting."
+    exit 1
+{% endif %}
 
+depmod -b {{ craft_part_install_dir }} {{ kernel_abi }}-{{ ubuntu_kernel_flavour }}
 
 # Manipulate stock kernel layout to the snapcraft package layout.
 mv {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
-ln -f {{ craft_part_install_dir }}/vmlinuz-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
+ln -f {{ craft_part_install_dir }}/vmlinuz-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
 mv {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/
 
 # Device tree
-DTBS=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"/device-tree
+DTBS=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/{{ kernel_abi }}/device-tree
 [ -d "${DTBS}" ] && mv "${DTBS}" {{ craft_part_install_dir }}/dtbs
 
 # Firmware
-FIRMWARE=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/"${KERNEL_ABI}"
+FIRMWARE=unpacked-linux-firmware/{{ craft_part_install_dir }}/lib/firmware/{{ kernel_abi }}
 [ -d "${FIRMWARE}" ] && mv "${FIRMWARE}" {{ craft_part_install_dir }}/firmware
 rm -rf {{ craft_part_install_dir }}/boot

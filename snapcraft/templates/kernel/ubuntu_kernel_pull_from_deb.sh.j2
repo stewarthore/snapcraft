@@ -33,14 +33,13 @@ apt download linux-firmware
 git clone --depth=1 --branch=master-next {{ source_repo_url }} .
 {%  endif %}
 
-# {% if ubuntu_kernel_dkms|length > 0 %}
-# # Headers are required to build the dkms sources
-# apt download linux-headers-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
-# # Add deb-src to the sources.list
-# sed -i 's/#deb-src \(.*\)$/deb-src \1/g' /etc/apt/sources.list
-# apt update
-# {% for dkms in ubuntu_kernel_dkms %}
-#     echo "Downloading dkms module source ${dkms}"
-#     apt source "${dkms}"
-# {% endfor %}
-# {% endif %}
+{% if ubuntu_kernel_dkms|length > 0 %}
+    # Headers are required to build the dkms sources
+    apt download linux-headers-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    rm -fr {{ craft_part_src_dir }}/dkms
+    mkdir {{ craft_part_build_dir }}/dkms
+    cd {{ craft_part_build_dir }}/dkms
+    {% for dkms in ubuntu_kernel_dkms %}
+        apt download {{ dkms }}
+    {% endfor %}
+{% endif %}

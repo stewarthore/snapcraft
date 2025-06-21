@@ -47,10 +47,6 @@ cd {{ craft_part_build_dir }}/kernel-src
         debian.master/rules.d/{{ target_arch }}.mk
 {% endif %}
 
-{% if is_cross_compiling %}
-    export "$(dpkg-architecture -a{{ target_arch }})"
-{% endif %}
-
 {% if has_ubuntu_kernel_config_fragments %}
 {
     echo "# Ubuntu kernel configuration fragment."
