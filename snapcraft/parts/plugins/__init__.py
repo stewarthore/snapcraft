@@ -26,6 +26,8 @@ from .ubuntu_kernel_plugin import UbuntuKernelPlugin
 from .matter_sdk_plugin import MatterSdkPlugin
 from .poetry_plugin import PoetryPlugin
 from .python_plugin import PythonPlugin
+from .ubuntu_core_initrd_plugin import UbuntuCoreInitrdPlugin
+from .ubuntu_kernel_plugin import UbuntuKernelPlugin
 from .uv_plugin import UvPlugin
 
 __all__ = [
@@ -40,4 +42,5 @@ __all__ = [
     "get_plugins",
     "register",
     "UvPlugin",
+    "UbuntuCoreInitrdPlugin",
 ]
