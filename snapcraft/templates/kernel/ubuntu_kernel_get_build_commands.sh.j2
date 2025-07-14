@@ -49,9 +49,9 @@ mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
 depmod -b {{ craft_part_install_dir }} {{ kernel_abi }}-{{ ubuntu_kernel_flavour }}
 
 # Manipulate stock kernel layout to the snapcraft package layout.
-mv {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
+ln {{ craft_part_install_dir }}/boot/* {{ craft_part_install_dir }}/
 ln -f {{ craft_part_install_dir }}/vmlinuz-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }} {{ craft_part_install_dir }}/kernel.img
-mv {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/
+ln -f {{ craft_part_install_dir }}/lib/modules {{ craft_part_install_dir }}/
 
 # Device tree
 DTBS=unpacked-linux-firmware/lib/firmware/{{ kernel_abi }}/device-tree
@@ -60,4 +60,4 @@ DTBS=unpacked-linux-firmware/lib/firmware/{{ kernel_abi }}/device-tree
 # Firmware
 FIRMWARE=unpacked-linux-firmware/lib/firmware/{{ kernel_abi }}
 [ -d "${FIRMWARE}" ] && mv "${FIRMWARE}" {{ craft_part_install_dir }}/firmware
-rm -rf {{ craft_part_install_dir }}/boot
+# rm -rf {{ craft_part_install_dir }}/boot
