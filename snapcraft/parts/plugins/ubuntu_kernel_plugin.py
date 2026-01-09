@@ -135,7 +135,20 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     ubuntu_kernel_tools: list[str] = []
     """Kernel tools to include, e.g. perf."""
     ubuntu_kernel_use_binary_package: bool = False
-    """Flag to use prebuilt kernel packages. Only valid with ubuntu-kernel-release-name."""
+    """Flag to use prebuilt kernel packages. Only valid with ubuntu-kernel-release-name.
+
+    A Canoical signed kernel is only possible using existing binary Debian packages.
+    """
+    ubuntu_kernel_use_debian_build_rules: bool = True
+    """When building from source build the kernel using Ubuntu Debian build rules.
+
+    If False the standard kernel kbuild make will be used.
+
+    The Ubuntu Debian build rules will build a kernel in the same way as the
+    Ubuntu kernel build system. The kbuild make rules will build a kernel
+    using the Linux kernel make system. It is not guaranteed that the two
+    will build the kernel the same way.
+    """
 
     @pydantic.model_validator(mode="after")
     def validate_release_name_and_source_exclusive(self) -> Self:
