@@ -19,12 +19,10 @@
 import os
 import pathlib
 import re
-import subprocess
 from typing import Literal, cast
 
 import jinja2
 import pydantic
-import requests
 from craft_cli import emit
 from craft_parts import infos, plugins
 from typing_extensions import Self, override
@@ -52,8 +50,6 @@ _AVAILABLE_TOOLS = [
     "perf",
     "bpftool",
 ]
-
-_LAUNCHPAD_ARCHIVE_API_URL = "https://api.launchpad.net/1.0/ubuntu/+archive/primary"
 
 _POCKET_TO_SUITE_SUFFIX: dict[str, str] = {
     "Release": "",
@@ -160,98 +156,6 @@ def kernel_launchpad_repository(release_name: str) -> str:
         The URL of the kernel source repository for the given release.
     """
     return KERNEL_REPO_STEM + release_name
-
-
-def get_kernel_deb_info_from_launchpad(
-    release_name: str, flavour: str, arch: str, pocket: str | None = None
-) -> tuple[str, str]:
-    """Query the Launchpad Archive API for the kernel metapackage ABI.
-
-    Args:
-        release_name: Ubuntu release name, e.g. "jammy".
-        flavour: Kernel flavour, e.g. "generic".
-        arch: Debian architecture string, e.g. "amd64", "arm64".
-        pocket: LP pocket name ("Updates", "Release", "Security", …).
-                When None, tries Updates then falls back to Release.
-
-    Returns:
-        Tuple of (apt_suite, kernel_abi), e.g. ("jammy-updates", "5.15.0-143").
-
-    Raises:
-        SnapcraftError: if the API call fails or no packages are found.
-    """
-
-    def _query(pocket_filter: str | None) -> list[dict]:
-        params = {
-            "ws.op": "getPublishedBinaries",
-            "binary_name": f"linux-image-{flavour}",
-            "distro_arch_series": (
-                f"https://api.launchpad.net/1.0/ubuntu/{release_name}/{arch}"
-            ),
-            "status": "Published",
-            "ordered_by_date": "true",
-        }
-        if pocket_filter:
-            params["pocket"] = pocket_filter
-        emit.debug(
-            f"Querying Launchpad API for linux-image-{flavour} on "
-            f"{release_name}/{arch}"
-            + (f" ({pocket_filter} pocket)" if pocket_filter else "")
-        )
-        try:
-            response = requests.get(
-                _LAUNCHPAD_ARCHIVE_API_URL, params=params, timeout=30
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:
-            raise errors.SnapcraftError(
-                f"failed to query Launchpad Archive API: {exc}",
-                resolution="Verify connectivity to https://api.launchpad.net and retry.",
-            ) from exc
-        return response.json().get("entries", [])
-
-    if pocket is not None:
-        entries = _query(pocket)
-        resolved_pocket = pocket
-        if not entries:
-            raise errors.SnapcraftError(
-                f"no published kernel packages found for "
-                f"linux-image-{flavour} on {release_name}/{arch} "
-                f"in the {pocket} pocket",
-                resolution="Verify the release name, flavour, pocket, and architecture.",
-            )
-    else:
-        # Sensible default: prefer Updates, fall back to Release.
-        entries = _query("Updates")
-        resolved_pocket = "Updates"
-        if not entries:
-            emit.debug("No packages in Updates pocket, trying Release pocket")
-            entries = _query("Release")
-            resolved_pocket = "Release"
-        if not entries:
-            raise errors.SnapcraftError(
-                f"no published kernel packages found for "
-                f"linux-image-{flavour} on {release_name}/{arch} "
-                f"in the Updates or Release pockets",
-                resolution="Verify the release name, flavour, and architecture.",
-            )
-
-    kernel_version: str = entries[0]["binary_package_version"]
-    kernel_abi = kernel_abi_from_version(kernel_version)
-    apt_suite = f"{release_name}{_POCKET_TO_SUITE_SUFFIX[resolved_pocket]}"
-    emit.debug(
-        f"Resolved kernel: version={kernel_version!r}, pocket={resolved_pocket!r}, "
-        f"apt_suite={apt_suite!r}, kernel_abi={kernel_abi!r}"
-    )
-    return apt_suite, kernel_abi
-
-
-def package_exists_in_apt_cache(package: str) -> bool:
-    """Check if a package exists in apt."""
-    result = subprocess.run(
-        ["apt-cache", "show", package], capture_output=True, check=True
-    )
-    return result.returncode == 0 and b"Package:" in result.stdout
 
 
 class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=True):
@@ -507,24 +411,6 @@ class UbuntuKernelPlugin(plugins.Plugin):
         template = env.get_template(template_file)
         source_repo_url = kernel_launchpad_repository(self.release_name)
 
-        apt_suite: str | None = None
-        kernel_abi: str | None = None
-        if self.options.ubuntu_kernel_use_binary_package:
-            if self.options.ubuntu_kernel_abi:
-                # User supplied ABI explicitly — skip LP query.
-                kernel_abi = (
-                    self.options.ubuntu_kernel_abi
-                )  # already normalised by validator
-                pocket = self.options.ubuntu_kernel_pocket or "Updates"  # title-case
-                apt_suite = f"{self.release_name}{_POCKET_TO_SUITE_SUFFIX[pocket]}"
-            else:
-                apt_suite, kernel_abi = get_kernel_deb_info_from_launchpad(
-                    release_name=self.release_name,
-                    flavour=self.options.ubuntu_kernel_flavour,
-                    arch=self._part_info.target_arch,
-                    pocket=self.options.ubuntu_kernel_pocket,  # None → auto-detect
-                )
-
         script = template.render(
             {
                 "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
@@ -533,8 +419,8 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 "target_arch": self._part_info.target_arch,
                 "ubuntu_kernel_flavour": self.options.ubuntu_kernel_flavour,
                 "source_repo_url": source_repo_url,
-                "apt_suite": apt_suite,
-                "kernel_abi": kernel_abi,
+                "ubuntu_kernel_pocket": self.options.ubuntu_kernel_pocket,
+                "ubuntu_kernel_abi": self.options.ubuntu_kernel_abi,
             }
         )
         return [script]

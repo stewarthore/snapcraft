@@ -5,31 +5,98 @@ env
 
 {% if ubuntu_kernel_use_binary_package %}
 
+    LP_API_URL="https://api.launchpad.net/1.0/ubuntu/+archive/primary"
+
+    {% if ubuntu_kernel_abi %}
+    KERNEL_ABI="{{ ubuntu_kernel_abi }}"
+    {% set pocket_to_suffix = {"Release": "", "Security": "-security", "Updates": "-updates", "Proposed": "-proposed", "Backports": "-backports"} %}
+    {% set effective_pocket = ubuntu_kernel_pocket or "Updates" %}
+    APT_SUITE="{{ ubuntu_kernel_release_name }}{{ pocket_to_suffix[effective_pocket] }}"
+
+    {% else %}
+    RELEASE="{{ ubuntu_kernel_release_name }}"
+    ARCH="{{ target_arch }}"
+    FLAVOUR="{{ ubuntu_kernel_flavour }}"
+
+    lp_query_kernel_version() {
+        local pocket="$1"
+        curl -sf -G "${LP_API_URL}" \
+            --data-urlencode "ws.op=getPublishedBinaries" \
+            --data-urlencode "binary_name=linux-image-${FLAVOUR}" \
+            --data-urlencode "distro_arch_series=https://api.launchpad.net/1.0/ubuntu/${RELEASE}/${ARCH}" \
+            --data-urlencode "status=Published" \
+            --data-urlencode "ordered_by_date=true" \
+            ${pocket:+--data-urlencode "pocket=${pocket}"} \
+        | grep -oP '"binary_package_version":\s*"\K[^"]+' \
+        | head -1
+    }
+
+    {% if ubuntu_kernel_pocket %}
+    KERNEL_VERSION=$(lp_query_kernel_version "{{ ubuntu_kernel_pocket }}")
+    if [ -z "${KERNEL_VERSION}" ]; then
+        echo "ERROR: no published kernel packages found for linux-image-${FLAVOUR} on ${RELEASE}/${ARCH} in the {{ ubuntu_kernel_pocket }} pocket" >&2
+        exit 1
+    fi
+    RESOLVED_POCKET="{{ ubuntu_kernel_pocket }}"
+    {% else %}
+    KERNEL_VERSION=$(lp_query_kernel_version "Updates")
+    if [ -n "${KERNEL_VERSION}" ]; then
+        RESOLVED_POCKET="Updates"
+    else
+        echo "No packages in Updates pocket, trying Release pocket"
+        KERNEL_VERSION=$(lp_query_kernel_version "Release")
+        RESOLVED_POCKET="Release"
+    fi
+    if [ -z "${KERNEL_VERSION}" ]; then
+        echo "ERROR: no published kernel packages found for linux-image-${FLAVOUR} on ${RELEASE}/${ARCH} in the Updates or Release pockets" >&2
+        exit 1
+    fi
+    {% endif %}
+
+    KERNEL_ABI=$(echo "${KERNEL_VERSION}" | sed -nE \
+        -e 's/^([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)\.[0-9]+$/\1/p' \
+        -e 's/^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)\.[0-9]+$/\1-\2/p')
+    if [ -z "${KERNEL_ABI}" ]; then
+        echo "ERROR: cannot parse kernel ABI from version ${KERNEL_VERSION}" >&2
+        exit 1
+    fi
+
+    case "${RESOLVED_POCKET}" in
+        Release)   APT_SUITE="{{ ubuntu_kernel_release_name }}" ;;
+        Security)  APT_SUITE="{{ ubuntu_kernel_release_name }}-security" ;;
+        Updates)   APT_SUITE="{{ ubuntu_kernel_release_name }}-updates" ;;
+        Proposed)  APT_SUITE="{{ ubuntu_kernel_release_name }}-proposed" ;;
+        Backports) APT_SUITE="{{ ubuntu_kernel_release_name }}-backports" ;;
+        *)         APT_SUITE="{{ ubuntu_kernel_release_name }}" ;;
+    esac
+    {% endif %}
+
     {% if is_cross_compiling %}
+    echo \
+        "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
+    {{ ubuntu_kernel_release_name }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+    if [ "${APT_SUITE}" != "{{ ubuntu_kernel_release_name }}" ]; then
         echo \
             "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
-        {{ ubuntu_kernel_release_name }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
-        {% if apt_suite != ubuntu_kernel_release_name %}
-        echo \
-            "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
-        {{ apt_suite }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
-        {% endif %}
-    {% elif apt_suite != ubuntu_kernel_release_name %}
+        ${APT_SUITE} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+    fi
+    {% else %}
+    if [ "${APT_SUITE}" != "{{ ubuntu_kernel_release_name }}" ]; then
         echo \
             "deb http://archive.ubuntu.com/ubuntu \
-        {{ apt_suite }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_archive.list
+        ${APT_SUITE} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_archive.list
+    fi
     {% endif %}
 
     apt-get update
 
-    echo "Kernel ABI: {{ kernel_abi }}"
-    apt download linux-image-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
-    apt download linux-modules-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
-    # modules-extra is not available for all kernels, e.g. xilinx
-    if apt-cache show linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }} 2>/dev/null | grep -q "^Package:"; then
-        apt download linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    echo "Kernel ABI: ${KERNEL_ABI}"
+    apt download linux-image-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    apt download linux-modules-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    if apt-cache show linux-modules-extra-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}:{{ target_arch }} 2>/dev/null | grep -q "^Package:"; then
+        apt download linux-modules-extra-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
     else
-        echo "linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }} not available, skipping"
+        echo "linux-modules-extra-${KERNEL_ABI}-{{ ubuntu_kernel_flavour }} not available, skipping"
     fi
     apt download linux-firmware
 
