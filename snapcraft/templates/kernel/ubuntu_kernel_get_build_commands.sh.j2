@@ -30,7 +30,9 @@ cd {{ craft_part_build_dir }}/kernel
 
 dpkg-deb -x linux-modules-{{ pkgfile_version_flavour }}.deb unpacked-linux-modules
 
-dpkg-deb -x linux-modules-extra-{{ pkgfile_version_flavour }}.deb unpacked-linux-modules
+if [ -f "linux-modules-extra-{{ pkgfile_version_flavour }}.deb" ]; then
+    dpkg-deb -x linux-modules-extra-{{ pkgfile_version_flavour }}.deb unpacked-linux-modules
+fi
 
 
 # Unpack the linux deb binaries to snap package structure
