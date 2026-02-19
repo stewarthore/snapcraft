@@ -9,7 +9,7 @@
 # ----
 env
 
-mkdir {{ craft_part_build_dir }}/kernel
+mkdir -p {{ craft_part_build_dir }}/kernel
 # Get source deb packages into build arena
 {% if ubuntu_kernel_use_binary_package %}
     rsync -aH {{ craft_part_src_dir }}/*.deb {{ craft_part_build_dir }}/kernel
@@ -30,12 +30,14 @@ cd {{ craft_part_build_dir }}/kernel
 
 dpkg-deb -x linux-modules-{{ pkgfile_version_flavor }}.deb unpacked-linux-modules
 
-dpkg-deb -x linux-modules-extra-{{ pkgfile_version_flavor }}.deb unpacked-linux-modules
+if [ -f "linux-modules-extra-{{ pkgfile_version_flavor }}.deb" ]; then
+    dpkg-deb -x linux-modules-extra-{{ pkgfile_version_flavor }}.deb unpacked-linux-modules
+fi
 
 
 # Unpack the linux deb binaries to snap package structure
 mv unpacked-linux-image/* {{ craft_part_install_dir }}
-mkdir {{ craft_part_install_dir }}/lib
+mkdir -p {{ craft_part_install_dir }}/lib
 mv unpacked-linux-modules/lib/modules {{ craft_part_install_dir }}/lib/
 mv unpacked-linux-modules/boot/* {{ craft_part_install_dir }}/boot/
 

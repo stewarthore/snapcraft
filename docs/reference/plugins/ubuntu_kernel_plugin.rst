@@ -118,6 +118,34 @@ If true, build the kernel snap using existing kernel Debian packages. The key
 ``ubuntu-kernel-release-name`` will define which Ubuntu kernel packages are used
 as the source.
 
+ubuntu-kernel-pocket
+~~~~~~~~~~~~~~~~~~~~
+
+**Type** string
+
+**Default** updates
+
+The Ubuntu apt pocket to pull kernel deb packages from. Accepted
+values are: `updates`, `proposed`, `security`, `release`.
+
+ubuntu-kernel-version
+~~~~~~~~~~~~~~~~~~~~~
+
+**Type** string
+
+**Default** Latest kernel version from the apt pocket used, default is `updates`
+
+Specify the kernel version to use. The version must be available in the apt
+pocket specified.
+
+ubuntu-kernel-source-ref
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Type** string
+
+**Default** master-next
+
+The branch, tag or commit reference to fetch when building from sources.
 
 Example
 -------
@@ -162,6 +190,22 @@ kernel apt package.
 
 Example
 -------
+
+This example part builds a noble xilinx kernel snap from an existing signed
+Ubuntu kernel apt package at a specified kernel version.
+
+.. code-block:: yaml
+
+    parts:
+        ubuntu-kernel:
+            plugin: ubuntu-kernel
+            ubuntu-kernel-release-name: noble
+            ubuntu-kernel-use-binary-package: true
+            ubuntu-kernel-version: 6.8.0-1024.25
+
+
+Example
+-------
 This part example shows how to build the noble kernel from source with
 additional dkms packages.
 
@@ -175,6 +219,20 @@ additional dkms packages.
               "vpoll-dkms",
               "r8125-dkms"
             ]
+
+Example
+-------
+This part example shows building the noble Xilinx kernel from source at a
+specified tag
+
+.. code-block:: yaml
+
+    parts:
+        ubuntu-kernel:
+            plugin: ubuntu-kernel
+            ubuntu-kernel-release-name: noble
+            ubuntu-kernel-flavor: xilinx
+            ubuntu-kernel-source-ref: Ubuntu-xilinx-6.8.0-1024.25
 
 Example
 -------

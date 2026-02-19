@@ -6,26 +6,42 @@ env
 {% if ubuntu_kernel_use_binary_package %}
 
     {% if is_cross_compiling %}
-        echo \
-            "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
-        {{ ubuntu_kernel_release_name }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+        # Pre 24.04 apt format
+        sed -i 's/^deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
+        if [ -d /etc/apt/sources.list.d ]; then
+            # Stop the host from looking for {{ target_arch }} on archive.ubuntu.com
+            find /etc/apt/sources.list.d/ -type f -name "*.list" ! -name "{{ ubuntu_kernel_release_name }}_ports.list" -exec sed -i 's/^deb http/deb [arch={{ host_arch }}] http/g' {} +
+        fi
+       # 1. Handle DEB822 format (Ubuntu 24.04+)
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            # Inject 'Architectures: amd64' into the stanzas to prevent fetching {{ target_arch }} from main archive
+            sed -i '/^Types: deb/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+        fi
+        # Add the ports repositories for the target architecture
+        # Using '>' for the first call to ensure a clean file if this script re-runs
+        echo "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports {{ ubuntu_kernel_release_name }} main restricted universe multiverse" > /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+        echo "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports {{ ubuntu_kernel_release_name }}-{{ ubuntu_kernel_pocket }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+        dpkg --add-architecture {{ target_arch }}
     {% endif %}
 
     apt-get update
 
-    KERNEL_ABI=$(apt show linux-image-{{ ubuntu_kernel_flavor }}:{{ target_arch }}/{{ ubuntu_kernel_release_name }} |
-        grep Version |
-        sed 's/Version: \(.*\)$/\1/g' |
-        cut -d. -f1-4 |
-        sed 's/\([0-9]\+\.[0-9]\+\.[0-9]\+\).\([0-9]\+\).*$/\1-\2/g'
-    )
-
-    echo "Kernel ABI: ${KERNEL_ABI}"
-    apt download linux-image-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
-    apt download linux-modules-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
-    apt download linux-modules-extra-"${KERNEL_ABI}"-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
+    echo "Kernel ABI: {{ kernel_abi }}"
+    apt download linux-image-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
+    apt download linux-modules-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
+    # modules-extra is not available for all kernels, e.g. xilinx
+    if apt-cache show linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }} 2>/dev/null | grep -q "^Package:"; then
+        apt download linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
+    else
+        echo "linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }} not available, skipping"
+    fi
     apt download linux-firmware
 
 {% else %}
-    git clone --depth=1 --branch=master-next {{ source_repo_url }} .
+    git init
+    git remote add origin {{ source_repo_url }}
+    # try a shallow fetch first, fall back to full fetch as it may not work for
+    # commit refs not on the HEAD of a branch
+    git fetch --depth 1 origin {{ kernel_source_ref }} || git fetch origin {{ kernel_source_ref }}
+    git checkout FETCH_HEAD
 {%  endif %}

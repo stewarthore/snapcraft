@@ -25,7 +25,12 @@ from craft_parts import Part, PartInfo, ProjectInfo
 from snapcraft import errors
 from snapcraft.parts.plugins import UbuntuKernelPlugin, ubuntu_kernel_plugin
 
-KERNEL_VERSION_MOCK_VALUE = ("5.15.0-143.153", "5.15.0-143")
+KERNEL_VERSION_MOCK_VALUE = ubuntu_kernel_plugin.KernelVersion(
+    full_version="5.15.0-143.153",
+    version="5.15.0",
+    abi="143",
+    spin="153",
+)
 
 
 def build_from_debpkg_cmds() -> list[str]:
@@ -163,7 +168,7 @@ def get_kernel_config_fragment_cmds(
         kernel_config_fragment_cmds += [
             "./debian/scripts/misc/annotations \\",
             f"--arch {target_arch} \\",
-            "--flavour generic \\",
+            "--flavor generic \\",
             "--update ;custom_config_fragment",
         ]
     return kernel_config_fragment_cmds
@@ -187,7 +192,7 @@ def get_kernel_defconfig_cmds(
         kernel_defconfig_cmds = [
             "./debian/scripts/misc/annotations \\",
             f"--arch {target_arch} \\",
-            "--flavour generic \\",
+            "--flavor generic \\",
             f"--import ;{kernel_defconfig}",
         ]
     return kernel_defconfig_cmds
@@ -339,7 +344,7 @@ def build_cmds(
     cmds = (
         [
             "env",
-            "mkdir ;parts/ubuntu-kernel/build/kernel",
+            "mkdir -p ;parts/ubuntu-kernel/build/kernel",
         ]
         + build_type_cmds
         + [
@@ -348,9 +353,11 @@ def build_cmds(
         + dpkg_deb_linux_image_cmd
         + [
             f"dpkg-deb -x linux-modules-5.15.0-143-generic_5.15.0-143.153_{target_arch}.deb unpacked-linux-modules",
+            f'if [ -f "linux-modules-extra-5.15.0-143-generic_5.15.0-143.153_{target_arch}.deb" ]; then',
             f"dpkg-deb -x linux-modules-extra-5.15.0-143-generic_5.15.0-143.153_{target_arch}.deb unpacked-linux-modules",
+            "fi",
             "mv unpacked-linux-image/* ;parts/ubuntu-kernel/install",
-            "mkdir ;parts/ubuntu-kernel/install/lib",
+            "mkdir -p ;parts/ubuntu-kernel/install/lib",
             "mv unpacked-linux-modules/lib/modules ;parts/ubuntu-kernel/install/lib/",
             "mv unpacked-linux-modules/boot/* ;parts/ubuntu-kernel/install/boot/",
             "depmod -b ;parts/ubuntu-kernel/install 5.15.0-143-generic",
@@ -433,6 +440,296 @@ def setup_method_fixture():
     yield _setup_method_fixture
 
 
+class TestParseVersionComponents:
+    """Tests for _parse_version_components()."""
+
+    def test_dash_format(self):
+        version = ubuntu_kernel_plugin._parse_version_components("5.15.0-143.153")
+        assert version is not None
+        assert version.full_version == "5.15.0-143.153"
+        assert version.kernel_abi() == "5.15.0-143"
+
+    def test_dot_format(self):
+        version = ubuntu_kernel_plugin._parse_version_components("5.4.0.1041.1041")
+        assert version is not None
+        assert version.full_version == "5.4.0-1041.1041"
+        assert version.kernel_abi() == "5.4.0-1041"
+
+    def test_dot_format_different_spin(self):
+        version = ubuntu_kernel_plugin._parse_version_components("5.4.0.1041.45")
+        assert version is not None
+        assert version.full_version == "5.4.0-1041.45"
+        assert version.kernel_abi() == "5.4.0-1041"
+
+    def test_invalid_format_returns_none(self):
+        assert ubuntu_kernel_plugin._parse_version_components("notaversion") is None
+
+
+class TestGetKernelInfoFromLaunchpad:
+    """Tests for get_kernel_info_from_launchpad()."""
+
+    def _make_lp_mock(
+        self,
+        binary_side_effects: list,
+        source_side_effects: list | None = None,
+    ) -> tuple[mock.MagicMock, mock.MagicMock]:
+        """Create a mock _get_launchpad() return value and mock archive.
+
+        Args:
+            binary_side_effects: side effects for archive.getPublishedBinaries().
+            source_side_effects: side effects for archive.getPublishedSources().
+
+        Returns:
+            Tuple of (mock_lp, mock_archive) for use in assertions.
+        """
+        mock_archive = mock.MagicMock()
+        mock_archive.getPublishedBinaries.side_effect = binary_side_effects
+        if source_side_effects is None:
+            source_side_effects = [[mock.MagicMock()]]
+        mock_archive.getPublishedSources.side_effect = source_side_effects
+
+        mock_das = mock.MagicMock()
+        mock_series = mock.MagicMock()
+        mock_series.getDistroArchSeries.return_value = mock_das
+
+        mock_ubuntu = mock.MagicMock()
+        mock_ubuntu.main_archive = mock_archive
+        mock_ubuntu.getSeries.return_value = mock_series
+
+        mock_lp = mock.MagicMock()
+        mock_lp.distributions.__getitem__.return_value = mock_ubuntu
+
+        return mock_lp, mock_archive
+
+    def _entry(self, version: str) -> mock.MagicMock:
+        entry = mock.MagicMock()
+        entry.binary_package_version = version
+        return entry
+
+    def test_updates_pocket_returns_kernel_info(self):
+        mock_lp, mock_archive = self._make_lp_mock([[self._entry("5.15.0-143.153")]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            kernel_info = ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                "jammy",
+                "generic",
+                "amd64",
+                pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+            )
+        assert kernel_info.apt_suite == "jammy-updates"
+        assert kernel_info.version.kernel_abi() == "5.15.0-143"
+        assert kernel_info.git_url == "https://example.test/kernel.git"
+        mock_archive.getPublishedBinaries.assert_called_once()
+        call_kwargs = mock_archive.getPublishedBinaries.call_args[1]
+        assert call_kwargs["pocket"] == "Updates"
+        assert call_kwargs["binary_name"] == "linux-image-generic"
+
+    def test_release_pocket_uses_release_suffix(self):
+        mock_lp, _ = self._make_lp_mock([[self._entry("6.8.0-1.1")]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            kernel_info = ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                "oracular",
+                "generic",
+                "amd64",
+                pocket=ubuntu_kernel_plugin.KernelAptPocket.RELEASE,
+            )
+        assert kernel_info.apt_suite == "oracular-release"
+        assert kernel_info.version.kernel_abi() == "6.8.0-1"
+
+    def test_empty_binary_results_raises(self):
+        mock_lp, _ = self._make_lp_mock([[]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            with pytest.raises(
+                errors.SnapcraftError,
+                match="no published kernel packages found",
+            ):
+                ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                    "jammy",
+                    "generic",
+                    "amd64",
+                    pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+                )
+
+    def test_empty_source_results_raises(self):
+        mock_lp, _ = self._make_lp_mock(
+            [[self._entry("5.15.0-143.153")]],
+            source_side_effects=[[]],
+        )
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            with pytest.raises(
+                errors.SnapcraftError,
+                match="no published kernel packages found",
+            ):
+                ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                    "jammy",
+                    "generic",
+                    "amd64",
+                    pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+                )
+
+    def test_explicit_security_pocket_single_call(self):
+        mock_lp, mock_archive = self._make_lp_mock([[self._entry("5.15.0-143.153")]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            kernel_info = ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                "jammy",
+                "generic",
+                "amd64",
+                pocket=ubuntu_kernel_plugin.KernelAptPocket.SECURITY,
+            )
+        assert kernel_info.apt_suite == "jammy-security"
+        assert kernel_info.version.kernel_abi() == "5.15.0-143"
+        mock_archive.getPublishedBinaries.assert_called_once()
+        call_kwargs = mock_archive.getPublishedBinaries.call_args[1]
+        assert call_kwargs["pocket"] == "Security"
+
+    def test_explicit_pocket_no_results_raises(self):
+        """Raises when explicit pocket returns no results."""
+        mock_lp, _ = self._make_lp_mock([[]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            with pytest.raises(
+                errors.SnapcraftError,
+                match="no published kernel packages found",
+            ):
+                ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                    "jammy",
+                    "generic",
+                    "amd64",
+                    pocket=ubuntu_kernel_plugin.KernelAptPocket.PROPOSED,
+                )
+
+    def test_returns_updates_suite_with_dot_version_format(self):
+        """Handles metapackage all-dots version (e.g. linux-image-xilinx on arm64)."""
+        mock_lp, _ = self._make_lp_mock([[self._entry("5.4.0.1041.1041")]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            kernel_info = ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                "jammy",
+                "xilinx",
+                "arm64",
+                pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+            )
+        assert kernel_info.apt_suite == "jammy-updates"
+        assert kernel_info.version.kernel_abi() == "5.4.0-1041"
+
+    def test_noble_release_returns_noble_updates(self):
+        """apt_suite uses the correct release name prefix."""
+        mock_lp, _ = self._make_lp_mock([[self._entry("6.8.0-51.52")]])
+        with (
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+                return_value=mock_lp,
+            ),
+            mock.patch(
+                "snapcraft.parts.plugins.ubuntu_kernel_plugin._resolve_kernel_git_url",
+                return_value="https://example.test/kernel.git",
+            ),
+        ):
+            kernel_info = ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                "noble",
+                "generic",
+                "amd64",
+                pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+            )
+        assert kernel_info.apt_suite == "noble-updates"
+        assert kernel_info.version.kernel_abi() == "6.8.0-51"
+
+    def test_raises_on_launchpad_connection_error(self):
+        """Raises SnapcraftError when the Launchpad connection fails."""
+        with mock.patch(
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            side_effect=RuntimeError("network error"),
+        ):
+            with pytest.raises(
+                errors.SnapcraftError,
+                match="failed to query Launchpad Archive API",
+            ):
+                ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                    "jammy",
+                    "generic",
+                    "amd64",
+                    pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+                )
+
+    def test_raises_on_launchpad_api_error(self):
+        """Raises SnapcraftError when the Launchpad API call fails."""
+        mock_lp, _ = self._make_lp_mock([RuntimeError("API error")])
+        with mock.patch(
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
+        ):
+            with pytest.raises(
+                errors.SnapcraftError,
+                match="failed to query Launchpad Archive API",
+            ):
+                ubuntu_kernel_plugin.get_kernel_info_from_launchpad(
+                    "jammy",
+                    "generic",
+                    "amd64",
+                    pocket=ubuntu_kernel_plugin.KernelAptPocket.UPDATES,
+                )
+
+
 class TestPluginUbuntuKenrel:
     """UbuntuKernel plugin tests."""
 
@@ -490,6 +787,80 @@ class TestPluginUbuntuKenrel:
         properties["ubuntu-kernel-use-binary-package"] = False
         # Should not raise
         _ = UbuntuKernelPlugin.properties_class.unmarshal(properties)
+
+    def test_pocket_without_binary_package_is_allowed(self, new_dir):
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-pocket": "security",
+        }
+        props = UbuntuKernelPlugin.properties_class.unmarshal(properties)
+        assert props.ubuntu_kernel_pocket == "security"
+
+    def test_version_without_binary_package_is_allowed(self, new_dir):
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-version": "5.15.0-143.153",
+        }
+        props = UbuntuKernelPlugin.properties_class.unmarshal(properties)
+        assert props.ubuntu_kernel_version == "5.15.0-143.153"
+
+    def test_invalid_pocket_raises(self, new_dir):
+        """An unrecognised pocket name raises SnapcraftError."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-pocket": "bleeding-edge",
+        }
+        with pytest.raises(
+            errors.SnapcraftError, match="Invalid value for 'ubuntu_kernel_pocket'"
+        ):
+            UbuntuKernelPlugin.properties_class.unmarshal(properties)
+
+    def test_invalid_abi_raises(self, new_dir):
+        """An unparseable ABI string raises SnapcraftError."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-version": "notanabi",
+        }
+        with pytest.raises(errors.SnapcraftError, match="cannot parse kernel ABI"):
+            UbuntuKernelPlugin.properties_class.unmarshal(properties)
+
+    @pytest.mark.parametrize(
+        "pocket_input",
+        ["updates", "security", "release", "proposed"],
+    )
+    def test_valid_pocket_accepted(self, new_dir, pocket_input):
+        """Valid pocket values are accepted."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-pocket": pocket_input,
+        }
+        props = UbuntuKernelPlugin.properties_class.unmarshal(properties)
+        assert props.ubuntu_kernel_pocket == pocket_input
+
+    @pytest.mark.parametrize(
+        "version_input, expected",
+        [
+            ("5.15.0-143.153", "5.15.0-143.153"),
+            ("5.15.0.143.153", "5.15.0.143.153"),
+        ],
+    )
+    def test_valid_version_accepted(self, new_dir, version_input, expected):
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-version": version_input,
+        }
+        props = UbuntuKernelPlugin.properties_class.unmarshal(properties)
+        assert props.ubuntu_kernel_version == expected
 
     @pytest.mark.parametrize(
         "build_params",
@@ -629,7 +1000,16 @@ class TestPluginUbuntuKenrel:
             build_params=build_params,
             properties=properties,
         )
-        result = plugin.get_pull_commands()
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-updates",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ):
+            result = plugin.get_pull_commands()
         assert result == []
 
     @pytest.mark.parametrize(
@@ -650,13 +1030,22 @@ class TestPluginUbuntuKenrel:
             build_params=build_params,
             properties=properties,
         )
-        result = plugin.get_pull_commands()
-        expected_clone_cmd = (
-            "git clone --depth=1 --branch=master-next "
-            "https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy "
-            "."
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-updates",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ):
+            result = plugin.get_pull_commands()
+        assert "git fetch" in result[0]
+        assert "git checkout FETCH_HEAD" in result[0]
+        assert (
+            "https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy"
+            in result[0]
         )
-        assert expected_clone_cmd in result[0]
 
     @pytest.mark.parametrize(
         "build_params",
@@ -677,21 +1066,183 @@ class TestPluginUbuntuKenrel:
             build_params=build_params,
             properties=properties,
         )
-        expected_cmds = [
-            r"apt-get update",
-            f"KERNEL_ABI=$(apt show linux-image-generic:{build_params.arch_build_for}/jammy |",
-            "    grep Version |",
-            r"    sed 's/Version: \(.*\)$/\1/g' |",
-            "    cut -d. -f1-4 |",
-            r"    sed 's/\([0-9]\+\.[0-9]\+\.[0-9]\+\).\([0-9]\+\).*$/\1-\2/g'",
-            'echo "Kernel ABI: ${KERNEL_ABI}',
-            f'apt download linux-image-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}',
-            f'apt download linux-modules-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}',
-            f'apt download linux-modules-extra-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}',
-            "apt download linux-firmware",
-        ]
-        result = plugin.get_pull_commands()
-        assert all(line in result[0] for line in expected_cmds)
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-updates",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ):
+            result = plugin.get_pull_commands()
+
+        script = result[0]
+        assert "Kernel ABI: 5.15.0-143" in script
+        assert "apt show" not in script
+        assert (
+            f"apt download linux-image-5.15.0-143-generic:{build_params.arch_build_for}"
+            in script
+        )
+        assert (
+            f"apt download linux-modules-5.15.0-143-generic:{build_params.arch_build_for}"
+            in script
+        )
+        assert (
+            f"apt-cache show linux-modules-extra-5.15.0-143-generic:{build_params.arch_build_for}"
+            in script
+        )
+        assert (
+            f"apt download linux-modules-extra-5.15.0-143-generic:{build_params.arch_build_for}"
+            in script
+        )
+        assert "apt download linux-firmware" in script
+
+    @pytest.mark.parametrize(
+        "build_params",
+        get_project_info_parameters(),
+        ids=get_test_fixture_ids(),
+    )
+    def test_get_pull_commands_binary_release_pocket_no_extra_source(
+        self, build_params, new_dir, setup_method_fixture
+    ):
+        """When pocket is 'Release', no extra pocket source lines are added."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+        }
+        plugin = setup_method_fixture(
+            new_dir=new_dir,
+            build_params=build_params,
+            properties=properties,
+        )
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-release",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ):
+            result = plugin.get_pull_commands()
+
+        script = result[0]
+        assert "Kernel ABI: 5.15.0-143" in script
+
+    @pytest.mark.parametrize(
+        "build_params",
+        get_project_info_parameters(),
+        ids=get_test_fixture_ids(),
+    )
+    def test_get_pull_commands_with_explicit_version(
+        self, build_params, new_dir, setup_method_fixture
+    ):
+        """Explicit ubuntu-kernel-version overrides the LP version in script output."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-version": "5.15.0-143.999",
+        }
+        plugin = setup_method_fixture(
+            new_dir=new_dir,
+            build_params=build_params,
+            properties=properties,
+        )
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-updates",
+                version=ubuntu_kernel_plugin.KernelVersion(
+                    full_version="5.15.0-143.153",
+                    version="5.15.0",
+                    abi="143",
+                    spin="153",
+                ),
+            ),
+        ) as mock_lp:
+            result = plugin.get_pull_commands()
+
+        mock_lp.assert_called_once()
+        script = result[0]
+        assert "Kernel ABI: 5.15.0-143" in script
+
+    @pytest.mark.parametrize(
+        "build_params",
+        get_project_info_parameters(),
+        ids=get_test_fixture_ids(),
+    )
+    def test_get_pull_commands_with_explicit_version_dot_format(
+        self, build_params, new_dir, setup_method_fixture
+    ):
+        """Dot-format version is parsed and rendered with dash ABI in script."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-version": "5.15.0.143.567",
+        }
+        plugin = setup_method_fixture(
+            new_dir=new_dir,
+            build_params=build_params,
+            properties=properties,
+        )
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-updates",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ):
+            result = plugin.get_pull_commands()
+
+        # Dot format should be normalised to dash form
+        assert "Kernel ABI: 5.15.0-143" in result[0]
+
+    @pytest.mark.parametrize(
+        "build_params",
+        get_project_info_parameters(),
+        ids=get_test_fixture_ids(),
+    )
+    def test_get_pull_commands_with_explicit_pocket(
+        self, build_params, new_dir, setup_method_fixture
+    ):
+        """Explicit ubuntu-kernel-pocket is forwarded to LP query."""
+        properties = {
+            "plugin-name": "ubuntu-kernel",
+            "ubuntu-kernel-release-name": "jammy",
+            "ubuntu-kernel-use-binary-package": True,
+            "ubuntu-kernel-pocket": "security",
+        }
+        plugin = setup_method_fixture(
+            new_dir=new_dir,
+            build_params=build_params,
+            properties=properties,
+        )
+        with mock.patch.object(
+            ubuntu_kernel_plugin,
+            "get_kernel_info_from_launchpad",
+            return_value=ubuntu_kernel_plugin.KernelInfo(
+                git_url="https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy",
+                apt_suite="jammy-security",
+                version=KERNEL_VERSION_MOCK_VALUE,
+            ),
+        ) as mock_lp:
+            result = plugin.get_pull_commands()
+
+        mock_lp.assert_called_once_with(
+            release_name="jammy",
+            flavor="generic",
+            arch=build_params.arch_build_for,
+            pocket=ubuntu_kernel_plugin.KernelAptPocket.SECURITY,
+        )
+        assert "Kernel ABI: 5.15.0-143" in result[0]
 
     @pytest.mark.parametrize(
         "build_params",

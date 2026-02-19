@@ -16,21 +16,26 @@
 
 """The Ubuntu kernel plugin for building Ubuntu Core kernel snaps."""
 
+import dataclasses
+import enum
 import os
 import pathlib
 import re
+from functools import lru_cache
 from typing import Literal, cast
 
 import jinja2
 import pydantic
+import requests
 from craft_cli import emit
 from craft_parts import infos, plugins
+from launchpadlib.launchpad import Launchpad
 from typing_extensions import Self, override
 
 from snapcraft import errors
 
 # The kernel repository depends on the flavor
-KERNEL_REPO_STEM = "https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/"
+KERNEL_REPO_STEM = "https://git.launchpad.net/~{owner}/ubuntu/+source/{source_name}/+git/{release_name}"
 DEFAULT_RELEASE_NAME = {"core22": "jammy", "core24": "noble"}
 
 _DEFAULT_KERNEL_IMAGE_TARGET = {
@@ -53,38 +58,77 @@ _AVAILABLE_TOOLS = [
 ]
 
 
-def kernel_abi_from_version(kernel_version: str) -> str:
-    """Given the kernel version string extract the ABI component.
+@dataclasses.dataclass
+class KernelVersion:
+    """Ubuntu kernel version information."""
+
+    full_version: str
+    abi: str
+    version: str
+    spin: str
+
+    def kernel_abi(self) -> str:
+        """Get the kernel ABI version"""
+        return f"{self.version}-{self.abi}"
+
+
+class KernelAptPocket(str, enum.Enum):
+    """Apt pocket to pull kernel debs from."""
+
+    UPDATES = "updates"
+    RELEASE = "release"
+    SECURITY = "security"
+    PROPOSED = "proposed"
+
+
+def _parse_version_components(input_str: str) -> KernelVersion | None:
+    """Parse the version string and return the parts.
+
+    Handles two version formats:
+    - Dash format:  "5.15.0-143.153"  → "5.15.0-143"  (source/deb packages)
+    - Dot format:   "5.4.0.1041.1041" → "5.4.0-1041"  (kernel metapackages)
 
     Args:
-        kernel_version (str): The kernel version string with ABI and spin
-        number, e.g. "5.15.0-1012.13".
+        input_str: Kernel version to parse
     Returns:
-        str: The kernel version with ABI but no spin number, e.g. "5.15.0-1012".
+        A KernelVersion with components extracted from the version string
     """
-    rem = re.match(r"(\d+\.\d+\.\d+-\d+)\.\d+", kernel_version)
+    emit.debug(f"Parse version components: {input_str}")
+    rem = re.match(r".*(\d+\.\d+\.\d+)-(\d+)\.(\d+).*$", input_str)
     if not rem:
-        raise errors.SnapcraftError("cannot parse kernel version from changelog")
-    return rem.group(1)
+        # Format 2: X.Y.Z.ABI.SPIN (kernel metapackage versions from LP API)
+        rem = re.match(r".*(\d+\.\d+\.\d+)\.(\d+)\.(\d+).*$", input_str)
+    if rem:
+        return KernelVersion(
+            full_version=f"{rem.group(1)}-{rem.group(2)}.{rem.group(3)}",
+            version=rem.group(1),
+            abi=rem.group(2),
+            spin=rem.group(3),
+        )
+    return None
 
 
-def kernel_version_from_source_tree(source_root: pathlib.Path) -> tuple[str, str]:
-    """Given a changelog file path open it and extract the kernel version.
+def kernel_version_from_source_tree(
+    source_root: pathlib.Path, flavor: str
+) -> KernelVersion:
+    """Given a changelog file path, open it and extract the kernel version.
 
     Args:
         source_root: The path to the source root directory
+        flavor: Kernel flavor to look up
     Returns:
-        A tuple containing the full kernel version and kernel ABI version
+        A KernelVersion dataclass
     """
-    changelog_file = source_root / "debian.master" / "changelog"
+    changelog_file = source_root / f"debian.{flavor}" / "changelog"
     with changelog_file.open("r") as fptr:
         version_line = fptr.readline()
-    kernel_version = version_line.split("(")[1].split(")")[0]
-    kernel_abi = kernel_abi_from_version(kernel_version)
-    return kernel_version, kernel_abi
+    kernel_version = _parse_version_components(version_line.split("(")[1].split(")")[0])
+    if not kernel_version:
+        raise errors.SnapcraftError("Failed to parse kernel version from changelog")
+    return kernel_version
 
 
-def kernel_version_from_debpkg_file(root_dir: pathlib.Path) -> tuple[str, str]:
+def kernel_version_from_debpkg_file(root_dir: pathlib.Path) -> KernelVersion:
     """Get the kernel version from debian package file names.
 
     Args:
@@ -93,27 +137,129 @@ def kernel_version_from_debpkg_file(root_dir: pathlib.Path) -> tuple[str, str]:
     Returns:
         A tuple containing the full kernel version and kernel ABI version.
     """
-    version_re = re.compile(r".*(\d+\.\d+\.\d+-\d+\.\d+).*\.deb")
-    for filename in [
-        pobj.name for pobj in sorted(root_dir.iterdir()) if pobj.is_file()
-    ]:
-        rem = version_re.search(filename)
-        if rem:
-            kernel_version = rem.group(1)
-            kernel_abi = kernel_abi_from_version(kernel_version)
-            return kernel_version, kernel_abi
+    for filename in root_dir.glob("linux*image*.deb"):
+        kernel_version = _parse_version_components(str(filename))
+        if kernel_version:
+            return kernel_version
     raise errors.SnapcraftError("cannot identify kernel version from Debian packages")
 
 
-def kernel_launchpad_repository(release_name: str) -> str:
-    """Get the kernel launchpad repository.
+@lru_cache(maxsize=1)
+def _get_launchpad() -> Launchpad:
+    """Get an anonymous Launchpad API connection."""
+    return Launchpad.login_anonymously(
+        "snapcraft-ubuntu-kernel", "production", version="devel"
+    )
+
+
+def _resolve_kernel_git_url(release_name: str, flavor: str) -> str:
+    """Get the kernel source git URL."""
+    # Launchpad does not have an API to find the git repository for a kernel
+    # from series name and flavor. We have to match against the two manifests
+    # to find the owner.
+
+    team_names = ["ubuntu-kernel", "canonical-kernel"]
+    source_pkg = "linux"
+    if flavor != "generic":
+        source_pkg = f"linux-{flavor}"
+
+    for name in team_names:
+        url = f"https://code.launchpad.net/~{name}/+git"
+        try:
+            response = requests.get(url, timeout=5)
+        except requests.RequestException as exc:
+            raise errors.SnapcraftError(f"Failed to fetch {url}") from exc
+
+        # Look for the source package repository for the release name
+        # The URL pattern is typically: /~name/ubuntu/+source/source_pkg/+git/release_name
+        match_part = f"~{name}/ubuntu/+source/{source_pkg}/+git/{release_name}"
+        if match_part in response.text:
+            return f"https://git.launchpad.net/~{name}/ubuntu/+source/{source_pkg}/+git/{release_name}"
+    raise errors.SnapcraftError(
+        f"failed to find kernel source url: {release_name}:linux-{flavor}"
+    )
+
+
+@dataclasses.dataclass
+class KernelInfo:
+    git_url: str
+    apt_suite: str
+    version: KernelVersion
+
+
+def get_kernel_info_from_launchpad(
+    release_name: str, flavor: str, arch: str, pocket: KernelAptPocket
+) -> KernelInfo:
+    """Query the Launchpad Archive API for the kernel metapackage ABI.
 
     Args:
-        release_name: The name of the Ubuntu release, e.g. "jammy", "noble".
+        release_name: Ubuntu release name, e.g. "jammy".
+        flavor: Kernel flavor, e.g. "generic".
+        arch: Debian architecture string, e.g. "amd64", "arm64".
+        pocket: LP pocket
+
     Returns:
-        The URL of the kernel source repository for the given release.
+        A kernel launchpad info instnace
+
+    Raises:
+        SnapcraftError: if the API call fails or no packages are found.
     """
-    return KERNEL_REPO_STEM + release_name
+    try:
+        lp = _get_launchpad()
+        ubuntu = lp.distributions["ubuntu"]
+        archive = ubuntu.main_archive
+        series = ubuntu.getSeries(name_or_version=release_name)
+        distro_arch_series = series.getDistroArchSeries(archtag=arch)
+    except Exception as exc:
+        raise errors.SnapcraftError(
+            f"failed to query Launchpad Archive API: {exc}",
+            resolution="Verify connectivity to https://api.launchpad.net and retry.",
+        ) from exc
+
+    source_pkg = "linux" if flavor == "generic" else f"linux-{flavor}"
+
+    def _query() -> tuple[list, list]:
+        emit.debug(
+            f"Querying Launchpad API for linux-image-{flavor} on "
+            f"{release_name}/{arch}" + f" ({pocket.value} pocket)"
+        )
+        try:
+            query_result = archive.getPublishedBinaries(
+                binary_name=f"linux-image-{flavor}",
+                distro_arch_series=distro_arch_series,
+                status="Published",
+                pocket=pocket.value.capitalize(),
+            )
+            source_query_result = archive.getPublishedSources(
+                source_name=source_pkg, distro_series=series, status="Published"
+            )
+            return list(query_result), list(source_query_result)
+        except Exception as query_exc:
+            raise errors.SnapcraftError(
+                f"failed to query Launchpad Archive API: {query_exc}",
+                resolution="Verify connectivity to https://api.launchpad.net and retry.",
+            ) from query_exc
+
+    binary_entries, source_entries = _query()
+    if not binary_entries or not source_entries:
+        raise errors.SnapcraftError(
+            f"no published kernel packages found for "
+            f"linux-image-{flavor} on {release_name}/{arch} "
+            f"in the {pocket} pocket",
+            resolution="Verify the release name, flavor, pocket, and architecture.",
+        )
+
+    kernel_version = _parse_version_components(binary_entries[0].binary_package_version)
+    apt_suite = f"{release_name}-{pocket.value}"
+    git_url = _resolve_kernel_git_url(release_name=release_name, flavor=flavor)
+
+    emit.debug(
+        f"Resolved kernel: version={kernel_version}, pocket={pocket.value}, "
+        f"apt_suite={apt_suite}, "
+        f"git_url={git_url}, "
+        f"kernel_abi={kernel_version.kernel_abi}"
+    )
+    return KernelInfo(git_url=git_url, apt_suite=apt_suite, version=kernel_version)
 
 
 class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=True):
@@ -137,6 +283,40 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     """Kernel tools to include, e.g. perf."""
     ubuntu_kernel_use_binary_package: bool = False
     """Flag to use prebuilt kernel packages. Only valid with ubuntu-kernel-release-name."""
+    ubuntu_kernel_pocket: str | None = "updates"
+    """Apt pocket to pull kernel debs from ('updates', 'release', 'security', 'proposed').
+    Default: updates"""
+    ubuntu_kernel_version: str | None = None
+    """Explicit kernel version, e.g. '5.15.0-143.567' or '5.15.0.143.567'.
+    When set the LP API is not queried. Requires ubuntu-kernel-use-binary-package."""
+    ubuntu_kernel_source_ref: str = "master-next"
+    """Explicit kernel git ref to checkout when building from source.
+    This can be a branch, tag or commit sha references. This option is only
+    applicable when ubuntu_kernel_use_binary_package is false."""
+
+    @pydantic.field_validator("ubuntu_kernel_version")
+    @classmethod
+    def validate_kernel_version_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not _parse_version_components(value):
+            raise errors.SnapcraftError(
+                f"cannot parse kernel ABI from {value}",
+                resolution="Provide a valid kernel ABI like '5.15.0-143.145' "
+                "or '5.15.0.143.145'.",
+            )
+        return value
+
+    @pydantic.model_validator(mode="after")
+    def validate_binary_only_options_require_binary_mode(self) -> Self:
+        """Enforce that pocket is a valid type."""
+        if self.ubuntu_kernel_pocket not in KernelAptPocket.__members__.values():
+            raise errors.SnapcraftError(
+                "'ubuntu-kernel-pocket' must be one of 'updates', 'release', "
+                f"'security', 'proposed', got '{self.ubuntu_kernel_pocket}'",
+                resolution="Choose a valid pocket type.",
+            )
+        return self
 
     @pydantic.model_validator(mode="after")
     def validate_release_name_and_source_exclusive(self) -> Self:
@@ -164,6 +344,7 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
                 "ubuntu_kernel_image_target",
                 "ubuntu_kernel_tools",
                 "ubuntu_kernel_dkms",
+                "ubuntu_kernel_source_ref",
             ]
             for option in conflicting_options:
                 if getattr(self, option):
@@ -181,7 +362,21 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
         if unknown_tools:
             raise errors.SnapcraftError(
                 "The following requested tools are not supported: "
-                f"{unknown_tools!r}. Supported tools: {_AVAILABLE_TOOLS!r}"
+                f"{unknown_tools}. Supported tools: {_AVAILABLE_TOOLS}"
+            )
+        return value
+
+    @pydantic.field_validator("ubuntu_kernel_pocket")
+    @classmethod
+    def validate_kernel_pocket(cls, value: str | None) -> str | None:
+        """Check the kernel pocket is a valid debian package pocket."""
+        if value is None:
+            return None
+        values = [x.value for x in KernelAptPocket]
+        if value not in values:
+            raise errors.SnapcraftError(
+                f"Invalid value for 'ubuntu_kernel_pocket': {value}. "
+                f"Valid values: {values}"
             )
         return value
 
@@ -203,6 +398,11 @@ class UbuntuKernelPlugin(plugins.Plugin):
             self.options.ubuntu_kernel_image_target
             if self.options.ubuntu_kernel_image_target is not None
             else _DEFAULT_KERNEL_IMAGE_TARGET[part_info.arch_build_for]
+        )
+        self.pocket = (
+            KernelAptPocket(self.options.ubuntu_kernel_pocket)
+            if self.options.ubuntu_kernel_pocket
+            else None
         )
 
     @override
@@ -325,17 +525,38 @@ class UbuntuKernelPlugin(plugins.Plugin):
             loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
         )
         template = env.get_template(template_file)
-        source_repo_url = kernel_launchpad_repository(self.release_name)
-        script = template.render(
-            {
-                "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
-                "ubuntu_kernel_release_name": self.release_name,
-                "is_cross_compiling": self._part_info.is_cross_compiling,
-                "target_arch": self._part_info.target_arch,
-                "ubuntu_kernel_flavor": self.options.ubuntu_kernel_flavor,
-                "source_repo_url": source_repo_url,
-            }
+        source_repo_url: str | None = None
+        kernel_info = get_kernel_info_from_launchpad(
+            release_name=self.release_name,
+            flavor=self.options.ubuntu_kernel_flavor,
+            arch=self._part_info.target_arch,
+            pocket=self.pocket,
         )
+        if (
+            self.options.ubuntu_kernel_use_binary_package
+            and self.options.ubuntu_kernel_version
+        ):
+            # User supplied ABI explicitly — override LP queried version.
+            kernel_info.version = _parse_version_components(
+                self.options.ubuntu_kernel_version
+            )
+        source_repo_url = kernel_info.git_url
+        kernel_abi = kernel_info.version.kernel_abi()
+        template_vars = {
+            "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
+            "ubuntu_kernel_release_name": self.release_name,
+            "is_cross_compiling": self._part_info.is_cross_compiling,
+            "host_arch": self._part_info.arch_build_on,
+            "target_arch": self._part_info.target_arch,
+            "ubuntu_kernel_flavor": self.options.ubuntu_kernel_flavor,
+            "source_repo_url": source_repo_url,
+            "apt_suite": kernel_info.apt_suite,
+            "kernel_abi": kernel_abi,
+            "kernel_source_ref": self.options.ubuntu_kernel_source_ref,
+            "ubuntu_kernel_pocket": self.pocket.value,
+        }
+        emit.debug(f"Pull script template: {template_vars}")
+        script = template.render(template_vars)
         return [script]
 
     @override
@@ -348,12 +569,13 @@ class UbuntuKernelPlugin(plugins.Plugin):
         emit.debug("Getting build commands")
         # Get the kernel version from the source files.
         if self.options.ubuntu_kernel_use_binary_package:
-            kernel_version, kernel_abi = kernel_version_from_debpkg_file(
+            kernel_version = kernel_version_from_debpkg_file(
                 self._part_info.part_src_dir
             )
         else:
-            kernel_version, kernel_abi = kernel_version_from_source_tree(
-                self._part_info.part_src_dir
+            kernel_version = kernel_version_from_source_tree(
+                self._part_info.part_src_dir,
+                flavor=self.options.ubuntu_kernel_flavor,
             )
 
         template_file = "kernel/ubuntu_kernel_get_build_commands.sh.j2"
@@ -361,48 +583,45 @@ class UbuntuKernelPlugin(plugins.Plugin):
             loader=jinja2.PackageLoader("snapcraft", "templates"), autoescape=True
         )
         template = env.get_template(template_file)
-        script = template.render(
-            {
-                "craft_arch_build_for": self._part_info.arch_build_for,
-                "craft_arch_build_on": self._part_info.arch_build_on,
-                "craft_arch_triplet_build_for": self._part_info.arch_triplet_build_for,
-                "craft_arch_triplet_build_on": self._part_info.arch_triplet_build_on,
-                "craft_part_build_dir": self._part_info.part_build_dir,
-                "craft_part_install_dir": self._part_info.part_install_dir,
-                "craft_part_src_dir": self._part_info.part_src_dir,
-                "craft_project_dir": self._part_info.project_dir,
-                "has_ubuntu_kernel_config_fragments": bool(
-                    self.options.ubuntu_kernel_config
-                ),
-                "has_ubuntu_kernel_defconfig": bool(
-                    self.options.ubuntu_kernel_defconfig
-                ),
-                "has_ubuntu_kernel_image_target": bool(
-                    self.options.ubuntu_kernel_image_target
-                ),
-                "is_cross_compiling": self._part_info.is_cross_compiling,
-                "kernel_abi": kernel_abi,
-                "kernel_version": kernel_version,
-                "pkgfile_version_all": f"{kernel_abi}_{kernel_version}_all",
-                # The package version can get quite long so to keep jinja2
-                # templates readable it is substituted with a variable.
-                "pkgfile_version_flavor": (
-                    f"{kernel_abi}-{self.options.ubuntu_kernel_flavor}_"
-                    f"{kernel_version}_{self._part_info.target_arch}"
-                ),
-                "snap_context": os.environ["SNAP_CONTEXT"],
-                "snap_data_path": os.environ["SNAP"],
-                "snap_version": os.environ["SNAP_VERSION"],
-                "target_arch": self._part_info.target_arch,
-                "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
-                "ubuntu_kernel_defconfig": self.options.ubuntu_kernel_defconfig,
-                "ubuntu_kernel_dkms": self.options.ubuntu_kernel_dkms,
-                "ubuntu_kernel_flavor": self.options.ubuntu_kernel_flavor,
-                "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
-                "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
-                "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
-            }
-        )
+        template_vars = {
+            "craft_arch_build_for": self._part_info.arch_build_for,
+            "craft_arch_build_on": self._part_info.arch_build_on,
+            "craft_arch_triplet_build_for": self._part_info.arch_triplet_build_for,
+            "craft_arch_triplet_build_on": self._part_info.arch_triplet_build_on,
+            "craft_part_build_dir": self._part_info.part_build_dir,
+            "craft_part_install_dir": self._part_info.part_install_dir,
+            "craft_part_src_dir": self._part_info.part_src_dir,
+            "craft_project_dir": self._part_info.project_dir,
+            "has_ubuntu_kernel_config_fragments": bool(
+                self.options.ubuntu_kernel_config
+            ),
+            "has_ubuntu_kernel_defconfig": bool(self.options.ubuntu_kernel_defconfig),
+            "has_ubuntu_kernel_image_target": bool(
+                self.options.ubuntu_kernel_image_target
+            ),
+            "is_cross_compiling": self._part_info.is_cross_compiling,
+            "kernel_abi": kernel_version.kernel_abi(),
+            "kernel_version": kernel_version.full_version,
+            # The package version can get quite long, so to keep jinja2
+            # templates readable, it is substituted with a variable.
+            "pkgfile_version_flavor": (
+                f"{kernel_version.kernel_abi()}-{self.options.ubuntu_kernel_flavor}_"
+                f"{kernel_version.full_version}_{self._part_info.target_arch}"
+            ),
+            "snap_context": os.environ["SNAP_CONTEXT"],
+            "snap_data_path": os.environ["SNAP"],
+            "snap_version": os.environ["SNAP_VERSION"],
+            "target_arch": self._part_info.target_arch,
+            "ubuntu_kernel_config": self.options.ubuntu_kernel_config,
+            "ubuntu_kernel_defconfig": self.options.ubuntu_kernel_defconfig,
+            "ubuntu_kernel_dkms": self.options.ubuntu_kernel_dkms,
+            "ubuntu_kernel_flavor": self.options.ubuntu_kernel_flavor,
+            "ubuntu_kernel_image_target": self.options.ubuntu_kernel_image_target,
+            "ubuntu_kernel_tools": self.options.ubuntu_kernel_tools,
+            "ubuntu_kernel_use_binary_package": self.options.ubuntu_kernel_use_binary_package,
+        }
+        emit.debug(f"Build script template: {template_vars}")
+        script = template.render(template_vars)
         return [script]
 
     @override
