@@ -19,14 +19,13 @@
 import os
 import pathlib
 import re
-import subprocess
 from typing import Literal, cast
 
 import jinja2
 import pydantic
-import requests
 from craft_cli import emit
 from craft_parts import infos, plugins
+from launchpadlib.launchpad import Launchpad
 from typing_extensions import Self, override
 
 from snapcraft import errors
@@ -53,8 +52,6 @@ _AVAILABLE_TOOLS = [
     "perf",
     "bpftool",
 ]
-
-_LAUNCHPAD_ARCHIVE_API_URL = "https://api.launchpad.net/1.0/ubuntu/+archive/primary"
 
 _POCKET_TO_SUITE_SUFFIX: dict[str, str] = {
     "Release": "",
@@ -163,6 +160,13 @@ def kernel_launchpad_repository(release_name: str) -> str:
     return KERNEL_REPO_STEM + release_name
 
 
+def _get_launchpad() -> Launchpad:
+    """Get an anonymous Launchpad API connection."""
+    return Launchpad.login_anonymously(
+        "snapcraft-ubuntu-kernel", "production", version="devel"
+    )
+
+
 def get_kernel_deb_info_from_launchpad(
     release_name: str, flavour: str, arch: str, pocket: str | None = None
 ) -> tuple[str, str]:
@@ -181,35 +185,38 @@ def get_kernel_deb_info_from_launchpad(
     Raises:
         SnapcraftError: if the API call fails or no packages are found.
     """
+    try:
+        lp = _get_launchpad()
+        ubuntu = lp.distributions["ubuntu"]
+        archive = ubuntu.main_archive
+        series = ubuntu.getSeries(name_or_version=release_name)
+        das = series.getDistroArchSeries(archtag=arch)
+    except Exception as exc:
+        raise errors.SnapcraftError(
+            f"failed to query Launchpad Archive API: {exc}",
+            resolution="Verify connectivity to https://api.launchpad.net and retry.",
+        ) from exc
 
-    def _query(pocket_filter: str | None) -> list[dict]:
-        params = {
-            "ws.op": "getPublishedBinaries",
-            "binary_name": f"linux-image-{flavour}",
-            "distro_arch_series": (
-                f"https://api.launchpad.net/1.0/ubuntu/{release_name}/{arch}"
-            ),
-            "status": "Published",
-            "ordered_by_date": "true",
-        }
-        if pocket_filter:
-            params["pocket"] = pocket_filter
+    def _query(pocket_filter: str | None) -> list:
         emit.debug(
             f"Querying Launchpad API for linux-image-{flavour} on "
             f"{release_name}/{arch}"
             + (f" ({pocket_filter} pocket)" if pocket_filter else "")
         )
+        kwargs: dict = {
+            "binary_name": f"linux-image-{flavour}",
+            "distro_arch_series": das,
+            "status": "Published",
+        }
+        if pocket_filter:
+            kwargs["pocket"] = pocket_filter
         try:
-            response = requests.get(
-                _LAUNCHPAD_ARCHIVE_API_URL, params=params, timeout=30
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:
+            return list(archive.getPublishedBinaries(**kwargs))
+        except Exception as exc:
             raise errors.SnapcraftError(
                 f"failed to query Launchpad Archive API: {exc}",
                 resolution="Verify connectivity to https://api.launchpad.net and retry.",
             ) from exc
-        return response.json().get("entries", [])
 
     if pocket is not None:
         entries = _query(pocket)
@@ -237,7 +244,7 @@ def get_kernel_deb_info_from_launchpad(
                 resolution="Verify the release name, flavour, and architecture.",
             )
 
-    kernel_version: str = entries[0]["binary_package_version"]
+    kernel_version: str = entries[0].binary_package_version
     kernel_abi = kernel_abi_from_version(kernel_version)
     apt_suite = f"{release_name}{_POCKET_TO_SUITE_SUFFIX[resolved_pocket]}"
     emit.debug(
@@ -249,10 +256,10 @@ def get_kernel_deb_info_from_launchpad(
 
 def package_exists_in_apt_cache(package: str) -> bool:
     """Check if a package exists in apt."""
-    result = subprocess.run(
-        ["apt-cache", "show", package], capture_output=True, check=True
-    )
-    return result.returncode == 0 and b"Package:" in result.stdout
+    import apt  # noqa: PLC0415
+
+    cache = apt.Cache()
+    return package in cache
 
 
 class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=True):

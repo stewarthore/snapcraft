@@ -20,7 +20,6 @@ import re
 from unittest import mock
 
 import pytest
-import requests
 from craft_parts import Part, PartInfo, ProjectInfo
 
 from snapcraft import errors
@@ -491,21 +490,46 @@ class TestNormaliseKernelAbi:
 class TestGetKernelDebInfoFromLaunchpad:
     """Tests for get_kernel_deb_info_from_launchpad()."""
 
-    def _make_response(self, entries: list[dict]) -> mock.MagicMock:
-        resp = mock.MagicMock()
-        resp.json.return_value = {"entries": entries}
-        resp.raise_for_status.return_value = None
-        return resp
+    def _make_lp_mock(
+        self, side_effects: list
+    ) -> tuple[mock.MagicMock, mock.MagicMock]:
+        """Create a mock _get_launchpad() return value and mock archive.
 
-    def _entry(self, version: str) -> dict:
-        return {"binary_package_version": version}
+        Args:
+            side_effects: list of return values (or exceptions) for each
+                         successive call to archive.getPublishedBinaries().
+
+        Returns:
+            Tuple of (mock_lp, mock_archive) for use in assertions.
+        """
+        mock_archive = mock.MagicMock()
+        mock_archive.getPublishedBinaries.side_effect = side_effects
+
+        mock_das = mock.MagicMock()
+        mock_series = mock.MagicMock()
+        mock_series.getDistroArchSeries.return_value = mock_das
+
+        mock_ubuntu = mock.MagicMock()
+        mock_ubuntu.main_archive = mock_archive
+        mock_ubuntu.getSeries.return_value = mock_series
+
+        mock_lp = mock.MagicMock()
+        mock_lp.distributions.__getitem__.return_value = mock_ubuntu
+
+        return mock_lp, mock_archive
+
+    def _entry(self, version: str) -> mock.MagicMock:
+        entry = mock.MagicMock()
+        entry.binary_package_version = version
+        return entry
 
     def test_default_pocket_tries_updates_first(self):
         """Default (no pocket): queries Updates; if found returns jammy-updates."""
+        mock_lp, mock_archive = self._make_lp_mock([[self._entry("5.15.0-143.153")]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=self._make_response([self._entry("5.15.0-143.153")]),
-        ) as mock_get:
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
+        ):
             apt_suite, kernel_abi = (
                 ubuntu_kernel_plugin.get_kernel_deb_info_from_launchpad(
                     "jammy", "generic", "amd64"
@@ -514,20 +538,18 @@ class TestGetKernelDebInfoFromLaunchpad:
         assert apt_suite == "jammy-updates"
         assert kernel_abi == "5.15.0-143"
         # Verify the LP call targeted the Updates pocket
-        called_params = mock_get.call_args[1]["params"]
-        assert called_params["pocket"] == "Updates"
-        assert called_params["binary_name"] == "linux-image-generic"
-        assert mock_get.call_count == 1
+        mock_archive.getPublishedBinaries.assert_called_once()
+        call_kwargs = mock_archive.getPublishedBinaries.call_args[1]
+        assert call_kwargs["pocket"] == "Updates"
+        assert call_kwargs["binary_name"] == "linux-image-generic"
 
     def test_default_pocket_falls_back_to_release(self):
         """Default (no pocket): when Updates is empty, falls back to Release."""
-
-        empty_resp = self._make_response([])
-        release_resp = self._make_response([self._entry("6.8.0-1.1")])
+        mock_lp, mock_archive = self._make_lp_mock([[], [self._entry("6.8.0-1.1")]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            side_effect=[empty_resp, release_resp],
-        ) as mock_get:
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
+        ):
             apt_suite, kernel_abi = (
                 ubuntu_kernel_plugin.get_kernel_deb_info_from_launchpad(
                     "oracular", "generic", "amd64"
@@ -535,19 +557,19 @@ class TestGetKernelDebInfoFromLaunchpad:
             )
         assert apt_suite == "oracular"  # no suffix for Release pocket
         assert kernel_abi == "6.8.0-1"
-        assert mock_get.call_count == 2
+        assert mock_archive.getPublishedBinaries.call_count == 2
         # First call: Updates; second call: Release
-        first_params = mock_get.call_args_list[0][1]["params"]
-        second_params = mock_get.call_args_list[1][1]["params"]
-        assert first_params["pocket"] == "Updates"
-        assert second_params["pocket"] == "Release"
+        first_kwargs = mock_archive.getPublishedBinaries.call_args_list[0][1]
+        second_kwargs = mock_archive.getPublishedBinaries.call_args_list[1][1]
+        assert first_kwargs["pocket"] == "Updates"
+        assert second_kwargs["pocket"] == "Release"
 
     def test_default_pocket_both_empty_raises(self):
         """Raises when both Updates and Release pockets are empty."""
-        empty = self._make_response([])
+        mock_lp, _ = self._make_lp_mock([[], []])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            side_effect=[empty, empty],
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
         ):
             with pytest.raises(
                 errors.SnapcraftError,
@@ -559,10 +581,11 @@ class TestGetKernelDebInfoFromLaunchpad:
 
     def test_explicit_pocket_single_call(self):
         """Explicit pocket: single LP call; apt_suite uses correct suffix."""
+        mock_lp, mock_archive = self._make_lp_mock([[self._entry("5.15.0-143.153")]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=self._make_response([self._entry("5.15.0-143.153")]),
-        ) as mock_get:
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
+        ):
             apt_suite, kernel_abi = (
                 ubuntu_kernel_plugin.get_kernel_deb_info_from_launchpad(
                     "jammy", "generic", "amd64", pocket="Security"
@@ -570,15 +593,16 @@ class TestGetKernelDebInfoFromLaunchpad:
             )
         assert apt_suite == "jammy-security"
         assert kernel_abi == "5.15.0-143"
-        assert mock_get.call_count == 1
-        called_params = mock_get.call_args[1]["params"]
-        assert called_params["pocket"] == "Security"
+        mock_archive.getPublishedBinaries.assert_called_once()
+        call_kwargs = mock_archive.getPublishedBinaries.call_args[1]
+        assert call_kwargs["pocket"] == "Security"
 
     def test_explicit_pocket_no_results_raises(self):
         """Raises when explicit pocket returns no results."""
+        mock_lp, _ = self._make_lp_mock([[]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=self._make_response([]),
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
         ):
             with pytest.raises(
                 errors.SnapcraftError,
@@ -590,9 +614,10 @@ class TestGetKernelDebInfoFromLaunchpad:
 
     def test_returns_updates_suite_with_dot_version_format(self):
         """Handles metapackage all-dots version (e.g. linux-image-xilinx on arm64)."""
+        mock_lp, _ = self._make_lp_mock([[self._entry("5.4.0.1041.1041")]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=self._make_response([self._entry("5.4.0.1041.1041")]),
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
         ):
             apt_suite, kernel_abi = (
                 ubuntu_kernel_plugin.get_kernel_deb_info_from_launchpad(
@@ -604,9 +629,10 @@ class TestGetKernelDebInfoFromLaunchpad:
 
     def test_noble_release_returns_noble_updates(self):
         """apt_suite uses the correct release name prefix."""
+        mock_lp, _ = self._make_lp_mock([[self._entry("6.8.0-51.52")]])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=self._make_response([self._entry("6.8.0-51.52")]),
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
         ):
             apt_suite, kernel_abi = (
                 ubuntu_kernel_plugin.get_kernel_deb_info_from_launchpad(
@@ -616,12 +642,11 @@ class TestGetKernelDebInfoFromLaunchpad:
         assert apt_suite == "noble-updates"
         assert kernel_abi == "6.8.0-51"
 
-    def test_raises_on_request_exception(self):
-        """Raises SnapcraftError when the HTTP request fails."""
-
+    def test_raises_on_launchpad_connection_error(self):
+        """Raises SnapcraftError when the Launchpad connection fails."""
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            side_effect=requests.exceptions.ConnectionError("network error"),
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            side_effect=RuntimeError("network error"),
         ):
             with pytest.raises(
                 errors.SnapcraftError,
@@ -631,14 +656,12 @@ class TestGetKernelDebInfoFromLaunchpad:
                     "jammy", "generic", "amd64"
                 )
 
-    def test_raises_on_http_error(self):
-        """Raises SnapcraftError on non-2xx HTTP responses."""
-
-        resp = mock.MagicMock()
-        resp.raise_for_status.side_effect = requests.exceptions.HTTPError("503 error")
+    def test_raises_on_launchpad_api_error(self):
+        """Raises SnapcraftError when the Launchpad API call fails."""
+        mock_lp, _ = self._make_lp_mock([RuntimeError("API error")])
         with mock.patch(
-            "snapcraft.parts.plugins.ubuntu_kernel_plugin.requests.get",
-            return_value=resp,
+            "snapcraft.parts.plugins.ubuntu_kernel_plugin._get_launchpad",
+            return_value=mock_lp,
         ):
             with pytest.raises(
                 errors.SnapcraftError,
@@ -990,22 +1013,22 @@ class TestPluginUbuntuKenrel:
             result = plugin.get_pull_commands()
 
         script = result[0]
-        assert 'KERNEL_ABI="5.15.0-143"' in script
+        assert "Kernel ABI: 5.15.0-143" in script
         assert "apt show" not in script
         assert (
-            f'apt download linux-image-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}'
+            f"apt download linux-image-5.15.0-143-generic:{build_params.arch_build_for}"
             in script
         )
         assert (
-            f'apt download linux-modules-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}'
+            f"apt download linux-modules-5.15.0-143-generic:{build_params.arch_build_for}"
             in script
         )
         assert (
-            f'apt-cache show linux-modules-extra-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}'
+            f"apt-cache show linux-modules-extra-5.15.0-143-generic:{build_params.arch_build_for}"
             in script
         )
         assert (
-            f'apt download linux-modules-extra-"${{KERNEL_ABI}}"-generic:{build_params.arch_build_for}'
+            f"apt download linux-modules-extra-5.15.0-143-generic:{build_params.arch_build_for}"
             in script
         )
         assert "apt download linux-firmware" in script
@@ -1038,7 +1061,7 @@ class TestPluginUbuntuKenrel:
             result = plugin.get_pull_commands()
 
         script = result[0]
-        assert 'KERNEL_ABI="5.15.0-143"' in script
+        assert "Kernel ABI: 5.15.0-143" in script
         # No extra pocket source lines should be present
         assert "jammy-updates" not in script
         assert "jammy-security" not in script
@@ -1073,7 +1096,7 @@ class TestPluginUbuntuKenrel:
         # LP must not be called when ABI is explicitly provided
         mock_lp.assert_not_called()
         script = result[0]
-        assert 'KERNEL_ABI="5.15.0-143"' in script
+        assert "Kernel ABI: 5.15.0-143" in script
         # Default pocket is Updates when only ABI is set
         assert "jammy-updates" in script
 
@@ -1104,7 +1127,7 @@ class TestPluginUbuntuKenrel:
             result = plugin.get_pull_commands()
 
         # Dot format should be normalised to dash form
-        assert 'KERNEL_ABI="5.15.0-143"' in result[0]
+        assert "Kernel ABI: 5.15.0-143" in result[0]
 
     @pytest.mark.parametrize(
         "build_params",
