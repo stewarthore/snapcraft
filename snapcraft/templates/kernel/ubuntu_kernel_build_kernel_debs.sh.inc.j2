@@ -57,7 +57,7 @@ cd {{ craft_part_build_dir }}/kernel-src
 } > {{ craft_project_dir }}/custom_config_fragment
     ./debian/scripts/misc/annotations \
        --arch {{ target_arch }} \
-       --flavour {{ ubuntu_kernel_flavor }} \
+       --flavor {{ ubuntu_kernel_flavor }} \
        --update {{ craft_project_dir }}/custom_config_fragment
 {% endif %}
 
@@ -65,7 +65,7 @@ cd {{ craft_part_build_dir }}/kernel-src
     {# Use full defconfig #}
     ./debian/scripts/misc/annotations \
             --arch {{ target_arch }} \
-            --flavour {{ ubuntu_kernel_flavor }} \
+            --flavor {{ ubuntu_kernel_flavor }} \
             --import {{ craft_project_dir }}/{{ ubuntu_kernel_defconfig }}
 {% endif %}
 

@@ -6,33 +6,40 @@ env
 {% if ubuntu_kernel_use_binary_package %}
 
     {% if is_cross_compiling %}
-        echo \
-            "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
-        {{ ubuntu_kernel_release_name }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
-        {% if apt_suite != ubuntu_kernel_release_name %}
-        echo \
-            "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports \
-        {{ apt_suite }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
-        {% endif %}
-    {% elif apt_suite != ubuntu_kernel_release_name %}
-        echo \
-            "deb http://archive.ubuntu.com/ubuntu \
-        {{ apt_suite }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_archive.list
+        # Pre 24.04 apt format
+        sed -i 's/^deb http/deb [arch=amd64] http/g' /etc/apt/sources.list
+        if [ -d /etc/apt/sources.list.d ]; then
+            # Stop the host from looking for {{ target_arch }} on archive.ubuntu.com
+            find /etc/apt/sources.list.d/ -type f -name "*.list" ! -name "{{ ubuntu_kernel_release_name }}_ports.list" -exec sed -i 's/^deb http/deb [arch={{ host_arch }}] http/g' {} +
+        fi
+       # 1. Handle DEB822 format (Ubuntu 24.04+)
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            # Inject 'Architectures: amd64' into the stanzas to prevent fetching {{ target_arch }} from main archive
+            sed -i '/^Types: deb/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+        fi
+        # Add the ports repositories for the target architecture
+        # Using '>' for the first call to ensure a clean file if this script re-runs
+        echo "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports {{ ubuntu_kernel_release_name }} main restricted universe multiverse" > /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+        echo "deb [arch={{ target_arch }}] http://ports.ubuntu.com/ubuntu-ports {{ ubuntu_kernel_release_name }}-{{ ubuntu_kernel_pocket }} main restricted universe multiverse" >> /etc/apt/sources.list.d/{{ ubuntu_kernel_release_name }}_ports.list
+        dpkg --add-architecture {{ target_arch }}
     {% endif %}
 
     apt-get update
 
     echo "Kernel ABI: {{ kernel_abi }}"
-    apt download linux-image-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
-    apt download linux-modules-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    apt download linux-image-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
+    apt download linux-modules-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
     # modules-extra is not available for all kernels, e.g. xilinx
-    if apt-cache show linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }} 2>/dev/null | grep -q "^Package:"; then
-        apt download linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }}:{{ target_arch }}
+    if apt-cache show linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }} 2>/dev/null | grep -q "^Package:"; then
+        apt download linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }}:{{ target_arch }}
     else
-        echo "linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavour }} not available, skipping"
+        echo "linux-modules-extra-{{ kernel_abi }}-{{ ubuntu_kernel_flavor }} not available, skipping"
     fi
     apt download linux-firmware
 
 {% else %}
-    git clone --depth=1 --branch=master-next {{ source_repo_url }} .
+    # Some newer kernels are using main-next as the main branch.
+    # Try master-next and fall back to main-next
+    git clone --depth=1 --branch=master-next {{ source_repo_url }} . || \
+        git clone --depth=1 --branch=main-next {{ source_repo_url }} .
 {%  endif %}
