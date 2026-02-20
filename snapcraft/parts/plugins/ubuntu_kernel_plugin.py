@@ -16,17 +16,17 @@
 
 """The Ubuntu kernel plugin for building Ubuntu Core kernel snaps."""
 
+import enum
 import os
 import pathlib
 import re
-import subprocess
 from typing import Literal, cast
 
 import jinja2
 import pydantic
-import requests
 from craft_cli import emit
 from craft_parts import infos, plugins
+from launchpadlib.launchpad import Launchpad
 from typing_extensions import Self, override
 
 from snapcraft import errors
@@ -54,17 +54,14 @@ _AVAILABLE_TOOLS = [
     "bpftool",
 ]
 
-_LAUNCHPAD_ARCHIVE_API_URL = "https://api.launchpad.net/1.0/ubuntu/+archive/primary"
 
-_POCKET_TO_SUITE_SUFFIX: dict[str, str] = {
-    "Release": "",
-    "Security": "-security",
-    "Updates": "-updates",
-    "Proposed": "-proposed",
-    "Backports": "-backports",
-}
+class KernelAptPocket(str, enum.Enum):
+    """Apt pocket to pull kernel debs from."""
 
-_VALID_POCKET_NAMES: frozenset[str] = frozenset(_POCKET_TO_SUITE_SUFFIX.keys())
+    UPDATES = "updates"
+    RELEASE = "release"
+    SECURITY = "security"
+    PROPOSED = "proposed"
 
 
 def kernel_abi_from_version(kernel_version: str) -> str:
@@ -110,7 +107,7 @@ def normalise_kernel_abi(abi_str: str) -> str:
     if rem:
         return f"{rem.group(1)}-{rem.group(2)}"
     raise errors.SnapcraftError(
-        f"cannot parse kernel ABI from {abi_str!r}",
+        f"cannot parse kernel ABI from {abi_str}",
         resolution="Provide a valid kernel ABI like '5.15.0-143' or '5.15.0.143'.",
     )
 
@@ -163,8 +160,15 @@ def kernel_launchpad_repository(release_name: str) -> str:
     return KERNEL_REPO_STEM + release_name
 
 
+def _get_launchpad() -> Launchpad:
+    """Get an anonymous Launchpad API connection."""
+    return Launchpad.login_anonymously(
+        "snapcraft-ubuntu-kernel", "production", version="devel"
+    )
+
+
 def get_kernel_deb_info_from_launchpad(
-    release_name: str, flavour: str, arch: str, pocket: str | None = None
+    release_name: str, flavour: str, arch: str, pocket: KernelAptPocket
 ) -> tuple[str, str]:
     """Query the Launchpad Archive API for the kernel metapackage ABI.
 
@@ -172,8 +176,7 @@ def get_kernel_deb_info_from_launchpad(
         release_name: Ubuntu release name, e.g. "jammy".
         flavour: Kernel flavour, e.g. "generic".
         arch: Debian architecture string, e.g. "amd64", "arm64".
-        pocket: LP pocket name ("Updates", "Release", "Security", …).
-                When None, tries Updates then falls back to Release.
+        pocket: LP pocket
 
     Returns:
         Tuple of (apt_suite, kernel_abi), e.g. ("jammy-updates", "5.15.0-143").
@@ -181,78 +184,54 @@ def get_kernel_deb_info_from_launchpad(
     Raises:
         SnapcraftError: if the API call fails or no packages are found.
     """
+    try:
+        lp = _get_launchpad()
+        ubuntu = lp.distributions["ubuntu"]
+        archive = ubuntu.main_archive
+        series = ubuntu.getSeries(name_or_version=release_name)
+        distro_arch_series = series.getDistroArchSeries(archtag=arch)
+    except Exception as exc:
+        raise errors.SnapcraftError(
+            f"failed to query Launchpad Archive API: {exc}",
+            resolution="Verify connectivity to https://api.launchpad.net and retry.",
+        ) from exc
 
-    def _query(pocket_filter: str | None) -> list[dict]:
-        params = {
-            "ws.op": "getPublishedBinaries",
-            "binary_name": f"linux-image-{flavour}",
-            "distro_arch_series": (
-                f"https://api.launchpad.net/1.0/ubuntu/{release_name}/{arch}"
-            ),
-            "status": "Published",
-            "ordered_by_date": "true",
-        }
-        if pocket_filter:
-            params["pocket"] = pocket_filter
+    def _query() -> list:
         emit.debug(
             f"Querying Launchpad API for linux-image-{flavour} on "
-            f"{release_name}/{arch}"
-            + (f" ({pocket_filter} pocket)" if pocket_filter else "")
+            f"{release_name}/{arch}" + f" ({pocket.value} pocket)"
         )
         try:
-            response = requests.get(
-                _LAUNCHPAD_ARCHIVE_API_URL, params=params, timeout=30
+            query_result = archive.getPublishedBinaries(
+                binary_name=f"linux-image-{flavour}",
+                distro_arch_series=distro_arch_series,
+                status="Published",
+                pocket=pocket.value,
             )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:
+            return list(query_result)
+        except Exception as exc:
             raise errors.SnapcraftError(
                 f"failed to query Launchpad Archive API: {exc}",
                 resolution="Verify connectivity to https://api.launchpad.net and retry.",
             ) from exc
-        return response.json().get("entries", [])
 
-    if pocket is not None:
-        entries = _query(pocket)
-        resolved_pocket = pocket
-        if not entries:
-            raise errors.SnapcraftError(
-                f"no published kernel packages found for "
-                f"linux-image-{flavour} on {release_name}/{arch} "
-                f"in the {pocket} pocket",
-                resolution="Verify the release name, flavour, pocket, and architecture.",
-            )
-    else:
-        # Sensible default: prefer Updates, fall back to Release.
-        entries = _query("Updates")
-        resolved_pocket = "Updates"
-        if not entries:
-            emit.debug("No packages in Updates pocket, trying Release pocket")
-            entries = _query("Release")
-            resolved_pocket = "Release"
-        if not entries:
-            raise errors.SnapcraftError(
-                f"no published kernel packages found for "
-                f"linux-image-{flavour} on {release_name}/{arch} "
-                f"in the Updates or Release pockets",
-                resolution="Verify the release name, flavour, and architecture.",
-            )
+    entries = _query()
+    if not entries:
+        raise errors.SnapcraftError(
+            f"no published kernel packages found for "
+            f"linux-image-{flavour} on {release_name}/{arch} "
+            f"in the {pocket} pocket",
+            resolution="Verify the release name, flavour, pocket, and architecture.",
+        )
 
-    kernel_version: str = entries[0]["binary_package_version"]
+    kernel_version: str = entries[0].binary_package_version
     kernel_abi = kernel_abi_from_version(kernel_version)
-    apt_suite = f"{release_name}{_POCKET_TO_SUITE_SUFFIX[resolved_pocket]}"
+    apt_suite = f"{release_name}-{pocket.value}"
     emit.debug(
-        f"Resolved kernel: version={kernel_version!r}, pocket={resolved_pocket!r}, "
-        f"apt_suite={apt_suite!r}, kernel_abi={kernel_abi!r}"
+        f"Resolved kernel: version={kernel_version}, pocket={pocket.value}, "
+        f"apt_suite={apt_suite}, kernel_abi={kernel_abi}"
     )
     return apt_suite, kernel_abi
-
-
-def package_exists_in_apt_cache(package: str) -> bool:
-    """Check if a package exists in apt."""
-    result = subprocess.run(
-        ["apt-cache", "show", package], capture_output=True, check=True
-    )
-    return result.returncode == 0 and b"Package:" in result.stdout
 
 
 class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=True):
@@ -279,26 +258,10 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
     ubuntu_kernel_pocket: str | None = None
     """Apt pocket to pull kernel debs from ('updates', 'release', 'security', 'proposed').
     Only valid with ubuntu-kernel-use-binary-package. Default: auto-detect via LP API
-    (prefers 'updates', falls back to 'release')."""
-    ubuntu_kernel_abi: str | None = None
-    """Explicit kernel ABI version, e.g. '5.15.0-143' or '5.15.0.143'.
+    (prefers 'release', falls back to 'update')."""
+    ubuntu_kernel_abi_version: str | None = None
+    """Explicit kernel ABI version, e.g. '5.15.0-143.567' or '5.15.0.143.567'.
     When set the LP API is not queried. Requires ubuntu-kernel-use-binary-package."""
-
-    @pydantic.field_validator("ubuntu_kernel_pocket")
-    @classmethod
-    def validate_pocket(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        # Normalise to title-case for internal use (matches LP API + _POCKET_TO_SUITE_SUFFIX)
-        title = value.strip().title()
-        if title not in _VALID_POCKET_NAMES:
-            raise errors.SnapcraftError(
-                f"invalid pocket {value!r}",
-                resolution=(
-                    f"Valid pockets: {sorted(p.lower() for p in _VALID_POCKET_NAMES)}"
-                ),
-            )
-        return title
 
     @pydantic.field_validator("ubuntu_kernel_abi")
     @classmethod
@@ -362,7 +325,21 @@ class UbuntuKernelPluginProperties(plugins.properties.PluginProperties, frozen=T
         if unknown_tools:
             raise errors.SnapcraftError(
                 "The following requested tools are not supported: "
-                f"{unknown_tools!r}. Supported tools: {_AVAILABLE_TOOLS!r}"
+                f"{unknown_tools}. Supported tools: {_AVAILABLE_TOOLS}"
+            )
+        return value
+
+    @pydantic.field_validator("ubuntu_kernel_pocket")
+    @classmethod
+    def validate_kernel_pocket(cls, value: str | None) -> str | None:
+        """Check the kernel pocket is a valid debian package pocket."""
+        if value is None:
+            return None
+        values = [x.value for x in KernelAptPocket]
+        if value not in values:
+            raise errors.SnapcraftError(
+                f"Invalid value for 'ubuntu_kernel_pocket': {value}. "
+                f"Valid values: {values}"
             )
         return value
 
@@ -384,6 +361,11 @@ class UbuntuKernelPlugin(plugins.Plugin):
             self.options.ubuntu_kernel_image_target
             if self.options.ubuntu_kernel_image_target is not None
             else _DEFAULT_KERNEL_IMAGE_TARGET[part_info.arch_build_for]
+        )
+        self.pocket = (
+            KernelAptPocket[self.options.ubuntu_kernel_pocket]
+            if self.options.ubuntu_kernel_pocket
+            else None
         )
 
     @override
@@ -516,14 +498,13 @@ class UbuntuKernelPlugin(plugins.Plugin):
                 kernel_abi = (
                     self.options.ubuntu_kernel_abi
                 )  # already normalised by validator
-                pocket = self.options.ubuntu_kernel_pocket or "Updates"  # title-case
-                apt_suite = f"{self.release_name}{_POCKET_TO_SUITE_SUFFIX[pocket]}"
+                apt_suite = f"{self.release_name}-{self.pocket.value}"
             else:
                 apt_suite, kernel_abi = get_kernel_deb_info_from_launchpad(
                     release_name=self.release_name,
                     flavour=self.options.ubuntu_kernel_flavour,
                     arch=self._part_info.target_arch,
-                    pocket=self.options.ubuntu_kernel_pocket,  # None → auto-detect
+                    pocket=self.pocket,
                 )
 
         script = template.render(
